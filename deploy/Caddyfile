@@ -1,0 +1,11 @@
+# TLS is automatic for {$DOMAIN}. The API is stateless, so more api replicas can sit behind this later.
+{$DOMAIN} {
+	encode zstd gzip
+	reverse_proxy api:3000 {
+		header_up X-Request-Id {http.request.uuid}
+	}
+	log {
+		output stdout
+		format json
+	}
+}
