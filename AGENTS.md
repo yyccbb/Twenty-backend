@@ -4,7 +4,7 @@ Guidance for coding agents working in this repository.
 
 ## What Twenty is
 
-Twenty is an iOS-first productivity app (web app later) pitched as "a school timetable for adults". It combines five things:
+Twenty is an iOS-first productivity app (web app later). It combines five things:
 
 1. A calendar where every event is built from **20-minute blocks ("slots")**.
 2. Scheduled **planning prompts** (for example, a nightly "plan tomorrow" notification).

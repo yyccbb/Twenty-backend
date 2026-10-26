@@ -20,7 +20,7 @@ export const OPENAPI_INFO = {
     title: 'Twenty API',
     version: '1.0.0',
     description:
-      'Backend for Twenty, a school timetable for adults. Times are ISO 8601 instants; all grid math uses 20-minute slots. Errors use { "error": { "code", "message" } }.',
+      'Backend for Twenty. Times are ISO 8601 instants; all grid math uses 20-minute slots. Errors use { "error": { "code", "message" } }.',
   },
 } as const;
 

@@ -1,6 +1,6 @@
 # Twenty backend
 
-API and background worker for Twenty, "a school timetable for adults". The design spec is
+API and background worker for Twenty. The design spec is
 `../Twenty/docs/architecture/backend-tech-stack.md`; `AGENTS.md` summarises it.
 
 TypeScript on Node 22 · Hono + `@hono/zod-openapi` · PostgreSQL 17 + Drizzle · pg-boss · Sign in with Apple + own JWTs · Qwen (Model Studio) behind `AiProvider`.
