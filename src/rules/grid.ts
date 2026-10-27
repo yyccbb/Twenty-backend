@@ -1,27 +1,27 @@
-import { type GridRules, DEFAULT_GRID_RULES, MINUTE_MS, slotMs } from './constants.js';
+import { type GridRules, DEFAULT_GRID_RULES, MINUTE_MS, barMs } from './constants.js';
 
 /**
  * snap(t) = the grid mark g with g − before < t ≤ g + after (spec §3.2).
  * Grid marks are UTC :00/:20/:40, which equal local marks in whole-hour zones.
  */
 export function snap(t: Date, rules: GridRules = DEFAULT_GRID_RULES): Date {
-  const slot = slotMs(rules);
-  if (rules.snapBeforeMinutes + rules.snapAfterMinutes !== rules.slotMinutes) {
-    throw new Error('snap window must cover exactly one slot');
+  const bar = barMs(rules);
+  if (rules.snapBeforeMinutes + rules.snapAfterMinutes !== rules.barMinutes) {
+    throw new Error('snap window must cover exactly one bar');
   }
   const after = rules.snapAfterMinutes * MINUTE_MS;
-  return new Date(Math.ceil((t.getTime() - after) / slot) * slot);
+  return new Date(Math.ceil((t.getTime() - after) / bar) * bar);
 }
 
 export function isOnGrid(t: Date, rules: GridRules = DEFAULT_GRID_RULES): boolean {
-  return t.getTime() % slotMs(rules) === 0;
+  return t.getTime() % barMs(rules) === 0;
 }
 
-/** Whole or fractional number of slots in [a, b). */
-export function slotsBetween(a: Date, b: Date, rules: GridRules = DEFAULT_GRID_RULES): number {
-  return (b.getTime() - a.getTime()) / slotMs(rules);
+/** Whole or fractional number of bars in [a, b). */
+export function barsBetween(a: Date, b: Date, rules: GridRules = DEFAULT_GRID_RULES): number {
+  return (b.getTime() - a.getTime()) / barMs(rules);
 }
 
-export function addSlots(t: Date, slots: number, rules: GridRules = DEFAULT_GRID_RULES): Date {
-  return new Date(t.getTime() + slots * slotMs(rules));
+export function addBars(t: Date, bars: number, rules: GridRules = DEFAULT_GRID_RULES): Date {
+  return new Date(t.getTime() + bars * barMs(rules));
 }

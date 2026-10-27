@@ -8,8 +8,8 @@ beforeAll(async () => {
 });
 afterAll(async () => h?.stop());
 
-async function createEvent(token: string, start: string, slots: number, title = 'Block') {
-  const res = await h.request('POST', '/v1/events', { token, body: { title, planned_start: start, duration_slots: slots } });
+async function createEvent(token: string, start: string, bars: number, title = 'Block', kind: 'cadenza' | 'tutti' = 'cadenza') {
+  const res = await h.request('POST', '/v1/events', { token, body: { title, planned_start: start, duration_bars: bars, kind } });
   expect(res.status, JSON.stringify(res.body)).toBe(201);
   return res.body;
 }
@@ -30,7 +30,7 @@ describe('start and finish', () => {
     const ev = await createEvent(token, sh('14:00'), 3);
     const start = await tap(token, ev.id, 'start', sh('14:03:10'));
     expect(start.status).toBe(200);
-    expect(start.body).toMatchObject({ outcome: 'on_time', early_slots: 0, late_slots: 0 });
+    expect(start.body).toMatchObject({ outcome: 'on_time', early_bars: 0, late_bars: 0 });
     expect(new Date(start.body.recorded_start).toISOString()).toBe(new Date(sh('14:00')).toISOString());
 
     const job = h.queue.take('events.auto_finish').find((j) => j.data.event_id === ev.id)!;
@@ -43,33 +43,34 @@ describe('start and finish', () => {
     expect(await balance(token)).toBe(30);
   });
 
-  it('late start loses only the missed slot; early start earns 50% per early slot', async () => {
+  it('late start loses only the missed bar; early start earns 50% per early bar', async () => {
     const { token } = await h.signIn();
     const late = await createEvent(token, sh('14:00'), 3);
-    expect((await tap(token, late.id, 'start', sh('14:07:12'))).body).toMatchObject({ outcome: 'late', late_slots: 1 });
+    expect((await tap(token, late.id, 'start', sh('14:07:12'))).body).toMatchObject({ outcome: 'late', late_bars: 1 });
     expect((await tap(token, late.id, 'finish', sh('15:00'))).body.tokens_awarded).toBe(20);
 
     const early = await createEvent(token, sh('16:00'), 3);
     const s = await tap(token, early.id, 'start', sh('15:30'));
-    expect(s.body).toMatchObject({ outcome: 'early', early_slots: 1 });
+    expect(s.body).toMatchObject({ outcome: 'early', early_bars: 1 });
     expect((await tap(token, early.id, 'finish', sh('17:00'))).body.tokens_awarded).toBe(35);
     expect(await balance(token)).toBe(55);
   });
 
-  it('rejects a start more than 2 slots early, and an early start that would make 3 events overlap', async () => {
+  it('rejects a start more than 2 bars early, and an early start that would overlap another Cadenza', async () => {
     const { token } = await h.signIn();
-    await createEvent(token, sh('13:00'), 3, 'A');
-    await createEvent(token, sh('13:20'), 2, 'B');
+    const a = await createEvent(token, sh('13:00'), 2, 'A');
+    await createEvent(token, sh('13:20'), 2, 'B', 'tutti');
     const x = await createEvent(token, sh('14:00'), 3, 'X');
 
     const tooEarly = await tap(token, x.id, 'start', sh('13:05'));
     expect(tooEarly.status).toBe(422);
     expect(tooEarly.body.error.code).toBe('too_early');
 
-    const overlap = await tap(token, x.id, 'start', sh('13:30'));
+    const overlap = await tap(token, x.id, 'start', sh('13:25'));
     expect(overlap.status).toBe(409);
-    expect(overlap.body.error.code).toBe('overlap_limit');
-    expect(overlap.body.error.conflicts).toHaveLength(2);
+    expect(overlap.body.error).toMatchObject({ code: 'cadenza_overlap', conflicts: [a.id] });
+    // Touching the Cadenza and overlapping only the Tutti is fine.
+    expect((await tap(token, x.id, 'start', sh('13:45'))).body).toMatchObject({ outcome: 'early', early_bars: 1 });
   });
 
   it('a start that snaps to the planned end marks the event missed', async () => {
@@ -103,14 +104,16 @@ describe('start and finish', () => {
     expect(old.body.error.code).toBe('tap_too_old');
   });
 
-  it('non-rewardable events earn nothing', async () => {
+  it('Tuttis are never started, extended or finished', async () => {
     const { token } = await h.signIn();
-    const res = await h.request('POST', '/v1/events', {
-      token,
-      body: { title: 'x', planned_start: sh('14:00'), duration_slots: 3, rewardable: false },
-    });
-    await tap(token, res.body.id, 'start', sh('14:00'));
-    expect((await tap(token, res.body.id, 'finish', sh('15:00'))).body.tokens_awarded).toBe(0);
+    const t = await createEvent(token, sh('14:00'), 3, 'T', 'tutti');
+    for (const action of ['start', 'finish'] as const) {
+      const res = await tap(token, t.id, action, sh('14:00'));
+      expect(res.status).toBe(409);
+      expect(res.body.error.code).toBe('not_cadenza');
+    }
+    const ext = await h.request('POST', `/v1/events/${t.id}/extend`, { token, body: { bars: 1 } });
+    expect(ext.body.error.code).toBe('not_cadenza');
     expect(await balance(token)).toBe(0);
   });
 });
@@ -144,14 +147,14 @@ describe('idempotency', () => {
 });
 
 describe('auto-finish and stale events', () => {
-  it('the auto-finish job deducts one slot; a stale job after an extension is a no-op', async () => {
+  it('the auto-finish job deducts one bar; a stale job after an extension is a no-op', async () => {
     const { token } = await h.signIn();
     const ev = await createEvent(token, sh('14:00'), 3);
     await tap(token, ev.id, 'start', sh('14:00'));
     const firstJob = h.queue.take('events.auto_finish').find((j) => j.data.event_id === ev.id)!;
 
     h.clock.set(sh('14:50'));
-    const ext = await h.request('POST', `/v1/events/${ev.id}/extend`, { token, body: { slots: 1 } });
+    const ext = await h.request('POST', `/v1/events/${ev.id}/extend`, { token, body: { bars: 1 } });
     expect(ext.status).toBe(200);
     const secondJob = h.queue.take('events.auto_finish').find((j) => j.data.event_id === ev.id)!;
     expect(secondJob.startAfter!.toISOString()).toBe(new Date(sh('15:25')).toISOString());
@@ -162,7 +165,7 @@ describe('auto-finish and stale events', () => {
     expect(await handleAutoFinish(h.deps, secondJob.data)).toBe(true);
 
     const got = await h.request('GET', `/v1/events/${ev.id}`, { token });
-    expect(got.body.record).toMatchObject({ finish_kind: 'auto', tokens_awarded: 25, extended_slots: 1 });
+    expect(got.body.record).toMatchObject({ finish_kind: 'auto', tokens_awarded: 25, extended_bars: 1 });
     expect(await balance(token)).toBe(25);
   });
 
@@ -188,6 +191,14 @@ describe('auto-finish and stale events', () => {
     expect((await h.request('POST', `/v1/events/${ev.id}/finish`, { token, body: { tapped_at: sh('15:02') } })).status).toBe(409);
   });
 
+  it('close_stale leaves Tuttis alone', async () => {
+    const { token } = await h.signIn();
+    const t = await createEvent(token, sh('09:00', '2026-11-04'), 1, 'T', 'tutti');
+    h.clock.set(sh('10:01', '2026-11-04'));
+    await handleCloseStale(h.deps);
+    expect((await h.request('GET', `/v1/events/${t.id}`, { token })).body.status).toBe('planned');
+  });
+
   it('close_stale marks unstarted past events missed, but a queued offline start still counts', async () => {
     const { token } = await h.signIn();
     const ev = await createEvent(token, sh('09:00', '2026-11-03'), 3);
@@ -211,12 +222,12 @@ describe('extend', () => {
     await tap(token, a.id, 'start', sh('14:00'));
     h.clock.set(sh('14:30'));
 
-    const preview = await h.request('POST', `/v1/events/${a.id}/extend`, { token, body: { slots: 1, dry_run: true } });
+    const preview = await h.request('POST', `/v1/events/${a.id}/extend`, { token, body: { bars: 1, dry_run: true } });
     expect(preview.status).toBe(200);
     expect(preview.body.moved.map((m: any) => m.id)).toEqual([b.id, c.id]);
     expect((await h.request('GET', `/v1/events/${b.id}`, { token })).body.planned_start).toBe(new Date(sh('15:00')).toISOString());
 
-    const res = await h.request('POST', `/v1/events/${a.id}/extend`, { token, body: { slots: 1 } });
+    const res = await h.request('POST', `/v1/events/${a.id}/extend`, { token, body: { bars: 1 } });
     expect(res.body.new_end).toBe(new Date(sh('15:20')).toISOString());
     expect(res.body.moved).toEqual([
       { id: b.id, planned_start: new Date(sh('15:20')).toISOString(), planned_end: new Date(sh('16:00')).toISOString(), version: 2 },
@@ -224,8 +235,37 @@ describe('extend', () => {
     ]);
     expect((await h.request('GET', `/v1/events/${c.id}`, { token })).body.planned_start).toBe(new Date(sh('16:00')).toISOString());
 
-    // Extended slots earn 50%.
+    // Extended bars earn 50%.
     expect((await tap(token, a.id, 'finish', sh('15:20'))).body.tokens_awarded).toBe(35);
+  });
+
+  it('moves each Cadenza only as far as needed and never moves Tuttis', async () => {
+    const { token } = await h.signIn();
+    const a = await createEvent(token, sh('14:00'), 3, 'A');
+    const b = await createEvent(token, sh('15:20'), 2, 'B');
+    const c = await createEvent(token, sh('16:20'), 1, 'C');
+    const d = await createEvent(token, sh('17:20'), 1, 'D');
+    const t = await createEvent(token, sh('15:00'), 2, 'T', 'tutti');
+    await tap(token, a.id, 'start', sh('14:00'));
+    h.clock.set(sh('14:30'));
+
+    const res = await h.request('POST', `/v1/events/${a.id}/extend`, { token, body: { bars: 3 } });
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(res.body.moved.map((m: any) => [m.id, m.planned_start])).toEqual([
+      [b.id, new Date(sh('16:00')).toISOString()],
+      [c.id, new Date(sh('16:40')).toISOString()],
+    ]);
+    for (const [id, start] of [[d.id, '17:20'], [t.id, '15:00']] as const) {
+      expect((await h.request('GET', `/v1/events/${id}`, { token })).body.planned_start).toBe(new Date(sh(start)).toISOString());
+    }
+    const shifts = await h.database.pool.query(
+      `SELECT event_id, delta_bars FROM event_changes WHERE kind = 'cascade_shift' AND caused_by_event_id = $1 ORDER BY delta_bars DESC`,
+      [a.id],
+    );
+    expect(shifts.rows).toEqual([
+      { event_id: b.id, delta_bars: 2 },
+      { event_id: c.id, delta_bars: 1 },
+    ]);
   });
 
   it('rejects pushing an event that is already in progress', async () => {
@@ -235,7 +275,7 @@ describe('extend', () => {
     await tap(token, a.id, 'start', sh('14:00'));
     await tap(token, c.id, 'start', sh('15:00'));
     h.clock.set(sh('15:01'));
-    const res = await h.request('POST', `/v1/events/${a.id}/extend`, { token, body: { slots: 1 } });
+    const res = await h.request('POST', `/v1/events/${a.id}/extend`, { token, body: { bars: 1 } });
     expect(res.status).toBe(409);
     expect(res.body.error).toMatchObject({ code: 'pushed_event_locked', conflicts: [c.id] });
   });
@@ -246,15 +286,15 @@ describe('extend', () => {
     const b = await createEvent(token, sh('23:00'), 2, 'B');
     await tap(token, a.id, 'start', sh('22:00'));
     h.clock.set(sh('22:30'));
-    const res = await h.request('POST', `/v1/events/${a.id}/extend`, { token, body: { slots: 2, dry_run: true } });
+    const res = await h.request('POST', `/v1/events/${a.id}/extend`, { token, body: { bars: 2, dry_run: true } });
     expect(res.body.day_end_warnings).toEqual([b.id]);
 
     await h.request('PATCH', '/v1/me/settings', { token, body: { day_end_local_time: '02:00' } });
-    const later = await h.request('POST', `/v1/events/${a.id}/extend`, { token, body: { slots: 2, dry_run: true } });
+    const later = await h.request('POST', `/v1/events/${a.id}/extend`, { token, body: { bars: 2, dry_run: true } });
     expect(later.body.day_end_warnings).toEqual([]);
 
     h.clock.set(sh('23:05:01'));
-    const closed = await h.request('POST', `/v1/events/${a.id}/extend`, { token, body: { slots: 1 } });
+    const closed = await h.request('POST', `/v1/events/${a.id}/extend`, { token, body: { bars: 1 } });
     expect(closed.body.error.code).toBe('window_closed');
   });
 });

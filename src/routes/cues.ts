@@ -1,56 +1,56 @@
 import { createRoute, z } from '@hono/zod-openapi';
 import {
-  createReminder,
-  deleteReminder,
-  getReminder,
-  listReminders,
+  createCue,
+  deleteCue,
+  getCue,
+  listCues,
   setOccurrenceState,
-  updateReminder,
-} from '../services/reminders.js';
+  updateCue,
+} from '../services/cues.js';
 import { DateTime, IdParam, IdempotencyHeaders, PageQuery, type RouteModule, body, errors, json, security } from './common.js';
-import { OccurrenceSchema, ReminderSchema } from './schemas.js';
+import { OccurrenceSchema, CueSchema } from './schemas.js';
 
 const Scope = z.enum(['this', 'following', 'all']).openapi('EditScope');
 
-export const reminderRoutes: RouteModule = (app, deps) => {
+export const cueRoutes: RouteModule = (app, deps) => {
   app.openapi(
     createRoute({
       method: 'get',
-      path: '/v1/reminders',
-      tags: ['Reminders'],
-      summary: 'List reminder definitions',
+      path: '/v1/cues',
+      tags: ['Cues'],
+      summary: 'List cue definitions',
       security,
       request: { query: PageQuery },
       responses: {
-        200: json(z.object({ items: z.array(ReminderSchema), next_cursor: z.string().nullable() }).openapi('ReminderPage')),
+        200: json(z.object({ items: z.array(CueSchema), next_cursor: z.string().nullable() }).openapi('CuePage')),
         ...errors(400, 401),
       },
     }),
     async (c) => {
       const q = c.req.valid('query');
-      return c.json(await listReminders(deps.database.db, c.get('userId'), q.cursor, q.limit), 200);
+      return c.json(await listCues(deps.database.db, c.get('userId'), q.cursor, q.limit), 200);
     },
   );
 
   app.openapi(
     createRoute({
       method: 'get',
-      path: '/v1/reminders/{id}',
-      tags: ['Reminders'],
-      summary: 'One reminder definition',
+      path: '/v1/cues/{id}',
+      tags: ['Cues'],
+      summary: 'One cue definition',
       security,
       request: { params: IdParam },
-      responses: { 200: json(ReminderSchema), ...errors(401, 404) },
+      responses: { 200: json(CueSchema), ...errors(401, 404) },
     }),
-    async (c) => c.json(await getReminder(deps.database.db, c.get('userId'), c.req.valid('param').id), 200),
+    async (c) => c.json(await getCue(deps.database.db, c.get('userId'), c.req.valid('param').id), 200),
   );
 
   app.openapi(
     createRoute({
       method: 'post',
-      path: '/v1/reminders',
-      tags: ['Reminders'],
-      summary: 'Create a reminder (any minute; optional RFC 5545 RRULE)',
+      path: '/v1/cues',
+      tags: ['Cues'],
+      summary: 'Create a cue (any minute; optional RFC 5545 RRULE)',
       security,
       request: {
         headers: IdempotencyHeaders,
@@ -64,19 +64,19 @@ export const reminderRoutes: RouteModule = (app, deps) => {
           }),
         ),
       },
-      responses: { 201: json(ReminderSchema, 'Created'), ...errors(400, 401, 422) },
+      responses: { 201: json(CueSchema, 'Created'), ...errors(400, 401, 422) },
     }),
-    async (c) => c.json(await createReminder(deps, c.get('userId'), c.req.valid('json')), 201),
+    async (c) => c.json(await createCue(deps, c.get('userId'), c.req.valid('json')), 201),
   );
 
   app.openapi(
     createRoute({
       method: 'patch',
-      path: '/v1/reminders/{id}',
-      tags: ['Reminders'],
-      summary: 'Edit a reminder',
+      path: '/v1/cues/{id}',
+      tags: ['Cues'],
+      summary: 'Edit a cue',
       description:
-        'A repeating reminder needs `scope`: `this` (one occurrence; needs `occurrence`), `following` (splits the series at `occurrence`; the new part is returned as `created`) or `all`.',
+        'A repeating cue needs `scope`: `this` (one occurrence; needs `occurrence`), `following` (splits the series at `occurrence`; the new part is returned as `created`) or `all`.',
       security,
       request: {
         params: IdParam,
@@ -95,19 +95,19 @@ export const reminderRoutes: RouteModule = (app, deps) => {
         ),
       },
       responses: {
-        200: json(z.object({ reminder: ReminderSchema, created: ReminderSchema.nullable() }).openapi('ReminderEditResult')),
+        200: json(z.object({ cue: CueSchema, created: CueSchema.nullable() }).openapi('CueEditResult')),
         ...errors(400, 401, 404, 409, 422),
       },
     }),
-    async (c) => c.json(await updateReminder(deps, c.get('userId'), c.req.valid('param').id, c.req.valid('json')), 200),
+    async (c) => c.json(await updateCue(deps, c.get('userId'), c.req.valid('param').id, c.req.valid('json')), 200),
   );
 
   app.openapi(
     createRoute({
       method: 'delete',
-      path: '/v1/reminders/{id}',
-      tags: ['Reminders'],
-      summary: 'Delete a reminder, one occurrence, or this and following',
+      path: '/v1/cues/{id}',
+      tags: ['Cues'],
+      summary: 'Delete a cue, one occurrence, or this and following',
       security,
       request: {
         params: IdParam,
@@ -118,7 +118,7 @@ export const reminderRoutes: RouteModule = (app, deps) => {
     }),
     async (c) => {
       const q = c.req.valid('query');
-      await deleteReminder(deps, c.get('userId'), c.req.valid('param').id, q.scope, q.occurrence);
+      await deleteCue(deps, c.get('userId'), c.req.valid('param').id, q.scope, q.occurrence);
       return c.body(null, 204);
     },
   );
@@ -126,8 +126,8 @@ export const reminderRoutes: RouteModule = (app, deps) => {
   app.openapi(
     createRoute({
       method: 'put',
-      path: '/v1/reminders/{id}/occurrences/{original_at}',
-      tags: ['Reminders'],
+      path: '/v1/cues/{id}/occurrences/{original_at}',
+      tags: ['Cues'],
       summary: 'Mark one occurrence done, skipped, snoozed or moved',
       description: '`new_at` is required for snoozed and moved. `pending` clears the state.',
       security,

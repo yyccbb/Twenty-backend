@@ -22,6 +22,7 @@ const createdAt = () => ts('created_at').notNull().defaultNow();
 const updatedAt = () => ts('updated_at').notNull().defaultNow();
 
 export const eventStatus = pgEnum('event_status', ['planned', 'in_progress', 'done', 'missed', 'cancelled']);
+export const eventKind = pgEnum('event_kind', ['cadenza', 'tutti']);
 export const finishKind = pgEnum('finish_kind', ['on_time', 'shortened', 'auto', 'abandoned']);
 export const eventChangeKind = pgEnum('event_change_kind', ['extend', 'cascade_shift', 'early_start']);
 export const goalStatus = pgEnum('goal_status', ['active', 'achieved', 'archived']);
@@ -34,6 +35,9 @@ export const users = pgTable('users', {
   id: uuid('id').primaryKey(),
   // Nulled on account deletion so the Apple ID can sign up again as a new user.
   appleSub: text('apple_sub').unique(),
+  // Lower-cased and trimmed. Nulled with password_hash on account deletion, like apple_sub.
+  email: text('email').unique(),
+  passwordHash: text('password_hash'),
   displayName: text('display_name'),
   timezone: text('timezone').notNull().default('UTC'),
   tokenBalance: integer('token_balance').notNull().default(0),
@@ -92,7 +96,7 @@ export interface BreakdownItem {
   id: string;
   title: string;
   description: string | null;
-  duration_slots: number;
+  duration_bars: number;
   sessions_per_week: number | null;
 }
 
@@ -131,8 +135,8 @@ export const events = pgTable(
     goalId: uuid('goal_id').references(() => goals.id, { onDelete: 'set null' }),
     breakdownItemId: uuid('breakdown_item_id'),
     plannedStart: ts('planned_start').notNull(),
-    durationSlots: integer('duration_slots').notNull(),
-    rewardable: boolean('rewardable').notNull().default(true),
+    kind: eventKind('kind').notNull().default('cadenza'),
+    durationBars: integer('duration_bars').notNull(),
     status: eventStatus('status').notNull().default('planned'),
     version: integer('version').notNull().default(1),
     createdAt: createdAt(),
@@ -141,11 +145,14 @@ export const events = pgTable(
   (t) => [
     index('events_user_planned_start_idx').on(t.userId, t.plannedStart),
     index('events_status_idx').on(t.status, t.plannedStart),
-    check('events_duration_positive', sql`${t.durationSlots} >= 1`),
+    check('events_duration_positive', sql`${t.durationBars} >= 1`),
+    // Tuttis are never started, so they are only ever planned or cancelled (spec §4).
+    check('events_tutti_status', sql`${t.kind} = 'cadenza' OR ${t.status} IN ('planned', 'cancelled')`),
     check('events_start_on_grid', sql`(extract(epoch from ${t.plannedStart})::bigint % 1200) = 0`),
   ],
 );
 
+// Cadenzas only.
 export const eventRecords = pgTable('event_records', {
   eventId: uuid('event_id')
     .primaryKey()
@@ -156,9 +163,9 @@ export const eventRecords = pgTable('event_records', {
   // Computed by the server.
   recordedStart: ts('recorded_start'),
   recordedEnd: ts('recorded_end'),
-  lateSlots: integer('late_slots').notNull().default(0),
-  earlySlots: integer('early_slots').notNull().default(0),
-  extendedSlots: integer('extended_slots').notNull().default(0),
+  lateBars: integer('late_bars').notNull().default(0),
+  earlyBars: integer('early_bars').notNull().default(0),
+  extendedBars: integer('extended_bars').notNull().default(0),
   finishKind: finishKind('finish_kind'),
   tokensAwarded: integer('tokens_awarded'),
   // The plan before early start / extend / shift.
@@ -177,15 +184,15 @@ export const eventChanges = pgTable(
       .notNull()
       .references(() => events.id, { onDelete: 'cascade' }),
     kind: eventChangeKind('kind').notNull(),
-    deltaSlots: integer('delta_slots').notNull(),
+    deltaBars: integer('delta_bars').notNull(),
     causedByEventId: uuid('caused_by_event_id'),
     createdAt: createdAt(),
   },
   (t) => [index('event_changes_event_idx').on(t.eventId)],
 );
 
-export const reminders = pgTable(
-  'reminders',
+export const cues = pgTable(
+  'cues',
   {
     id: uuid('id').primaryKey(),
     userId: uuid('user_id')
@@ -203,36 +210,36 @@ export const reminders = pgTable(
     createdAt: createdAt(),
     updatedAt: updatedAt(),
   },
-  (t) => [index('reminders_user_idx').on(t.userId, t.id), index('reminders_series_idx').on(t.seriesId)],
+  (t) => [index('cues_user_idx').on(t.userId, t.id), index('cues_series_idx').on(t.seriesId)],
 );
 
-export const reminderOccurrences = pgTable(
-  'reminder_occurrences',
+export const cueOccurrences = pgTable(
+  'cue_occurrences',
   {
-    reminderId: uuid('reminder_id')
+    cueId: uuid('cue_id')
       .notNull()
-      .references(() => reminders.id, { onDelete: 'cascade' }),
+      .references(() => cues.id, { onDelete: 'cascade' }),
     originalAt: ts('original_at').notNull(),
     status: occurrenceStatus('status').notNull(),
     newAt: ts('new_at'),
     // Set when "this occurrence" was edited into a standalone copy.
-    detachedReminderId: uuid('detached_reminder_id'),
+    detachedCueId: uuid('detached_cue_id'),
     updatedAt: updatedAt(),
   },
-  (t) => [primaryKey({ columns: [t.reminderId, t.originalAt] }), index('reminder_occurrences_new_at_idx').on(t.newAt)],
+  (t) => [primaryKey({ columns: [t.cueId, t.originalAt] }), index('cue_occurrences_new_at_idx').on(t.newAt)],
 );
 
 export const rewardRules = pgTable(
   'reward_rules',
   {
     version: integer('version').primaryKey(),
-    tokensPerSlot: integer('tokens_per_slot').notNull(),
-    earlySlotRate: numeric('early_slot_rate', { precision: 5, scale: 4, mode: 'number' }).notNull(),
-    extendedSlotRate: numeric('extended_slot_rate', { precision: 5, scale: 4, mode: 'number' }).notNull(),
-    autoFinishDeductionSlots: integer('auto_finish_deduction_slots').notNull(),
+    tokensPerBar: integer('tokens_per_bar').notNull(),
+    earlyBarRate: numeric('early_bar_rate', { precision: 5, scale: 4, mode: 'number' }).notNull(),
+    extendedBarRate: numeric('extended_bar_rate', { precision: 5, scale: 4, mode: 'number' }).notNull(),
+    autoFinishDeductionBars: integer('auto_finish_deduction_bars').notNull(),
     createdAt: createdAt(),
   },
-  (t) => [check('reward_rules_even_value', sql`${t.tokensPerSlot} > 0 AND ${t.tokensPerSlot} % 2 = 0`)],
+  (t) => [check('reward_rules_even_value', sql`${t.tokensPerBar} > 0 AND ${t.tokensPerBar} % 2 = 0`)],
 );
 
 // Append-only: a trigger (see migrations) rejects UPDATE, DELETE and TRUNCATE.

@@ -5,6 +5,11 @@ const NullableInstant = Instant.nullable();
 
 export const EventStatus = z.enum(['planned', 'in_progress', 'done', 'missed', 'cancelled']).openapi('EventStatus');
 export const FinishKind = z.enum(['on_time', 'shortened', 'auto', 'abandoned']).openapi('FinishKind');
+export const EventKind = z
+  .enum(['cadenza', 'tutti'])
+  .openapi('EventKind', {
+    description: 'cadenza: timed, rewarded focus work that never overlaps another Cadenza. tutti: an ordinary event that overlaps freely.',
+  });
 
 export const EventRecordSchema = z
   .object({
@@ -12,16 +17,16 @@ export const EventRecordSchema = z
     finish_tapped_at: NullableInstant,
     recorded_start: NullableInstant,
     recorded_end: NullableInstant,
-    early_slots: z.number().int(),
-    late_slots: z.number().int(),
-    extended_slots: z.number().int(),
+    early_bars: z.number().int(),
+    late_bars: z.number().int(),
+    extended_bars: z.number().int(),
     finish_kind: FinishKind.nullable(),
     tokens_awarded: z.number().int().nullable(),
     original_planned_start: Instant,
     original_planned_end: Instant,
     rules_version: z.number().int(),
   })
-  .openapi('EventRecord');
+  .openapi('EventRecord', { description: 'Start/finish record; Cadenzas only' });
 
 export const EventSchema = z
   .object({
@@ -32,9 +37,9 @@ export const EventSchema = z
     breakdown_item_id: z.string().nullable(),
     planned_start: Instant,
     planned_end: Instant,
-    duration_slots: z.number().int(),
-    rewardable: z.boolean(),
-    status: EventStatus,
+    kind: EventKind,
+    duration_bars: z.number().int(),
+    status: EventStatus.openapi({ description: 'Tuttis are only ever planned or cancelled' }),
     version: z.number().int(),
     record: EventRecordSchema.nullable(),
     created_at: Instant,
@@ -48,8 +53,8 @@ export const StartResultSchema = z
   .object({
     outcome: z.enum(['early', 'on_time', 'late', 'missed']),
     recorded_start: NullableInstant,
-    early_slots: z.number().int(),
-    late_slots: z.number().int(),
+    early_bars: z.number().int(),
+    late_bars: z.number().int(),
     event: EventSchema,
   })
   .openapi('StartResult');
@@ -58,18 +63,20 @@ export const ExtendResultSchema = z
   .object({
     dry_run: z.boolean(),
     new_end: Instant,
-    moved: z.array(z.object({ id: z.string(), planned_start: Instant, planned_end: Instant, version: z.number().int() })),
-    day_end_warnings: z.array(z.string()).openapi({ description: 'IDs of changed events that now end after the day end' }),
+    moved: z
+      .array(z.object({ id: z.string(), planned_start: Instant, planned_end: Instant, version: z.number().int() }))
+      .openapi({ description: 'Every Cadenza the cascade pushes, in start order' }),
+    day_end_warnings: z.array(z.string()).openapi({ description: 'IDs of changed Cadenzas that now end after the day end' }),
     event: EventSchema,
   })
   .openapi('ExtendResult');
 
 export const TokenBreakdownSchema = z
   .object({
-    planned_slots_completed: z.number().int(),
-    early_slots_completed: z.number().int(),
-    extended_slots_completed: z.number().int(),
-    auto_deduction_slots: z.number().int(),
+    planned_bars_completed: z.number().int(),
+    early_bars_completed: z.number().int(),
+    extended_bars_completed: z.number().int(),
+    auto_deduction_bars: z.number().int(),
     tokens: z.number().int(),
   })
   .openapi('TokenBreakdown');
@@ -96,6 +103,7 @@ export const MeSchema = z
   .object({
     id: z.string(),
     display_name: z.string().nullable(),
+    email: z.string().nullable().openapi({ description: 'Set for email accounts; null for Sign in with Apple' }),
     timezone: z.string(),
     timezone_supported: z.boolean(),
     token_balance: z.number().int(),
@@ -119,7 +127,7 @@ export const SessionSchema = z
   })
   .openapi('Session');
 
-export const ReminderSchema = z
+export const CueSchema = z
   .object({
     id: z.string(),
     series_id: z.string(),
@@ -133,13 +141,13 @@ export const ReminderSchema = z
     created_at: Instant,
     updated_at: Instant,
   })
-  .openapi('Reminder');
+  .openapi('Cue');
 
 export const OccurrenceStatus = z.enum(['pending', 'done', 'skipped', 'snoozed', 'moved']).openapi('OccurrenceStatus');
 
 export const OccurrenceSchema = z
   .object({
-    reminder_id: z.string(),
+    cue_id: z.string(),
     series_id: z.string(),
     title: z.string(),
     notes: z.string().nullable(),
@@ -148,7 +156,7 @@ export const OccurrenceSchema = z
     status: OccurrenceStatus,
     repeating: z.boolean(),
   })
-  .openapi('ReminderOccurrence');
+  .openapi('CueOccurrence');
 
 export const GoalSchema = z
   .object({
@@ -167,7 +175,7 @@ export const BreakdownItemSchema = z
     id: z.string(),
     title: z.string(),
     description: z.string().nullable(),
-    duration_slots: z.number().int(),
+    duration_bars: z.number().int(),
     sessions_per_week: z.number().int().nullable(),
   })
   .openapi('BreakdownItem');

@@ -4,7 +4,7 @@ info:
   title: Twenty API
   version: 1.0.0
   description: 'Backend for Twenty. Times are ISO 8601 instants; all grid math
-    uses 20-minute slots. Errors use { "error": { "code", "message" } }.'
+    uses 20-minute bars. Errors use { "error": { "code", "message" } }.'
 components:
   securitySchemes:
     Bearer:
@@ -55,7 +55,7 @@ components:
           properties:
             code:
               type: string
-              example: overlap_limit
+              example: cadenza_overlap
             message:
               type: string
             conflicts:
@@ -77,6 +77,11 @@ components:
           type:
             - string
             - "null"
+        email:
+          type:
+            - string
+            - "null"
+          description: Set for email accounts; null for Sign in with Apple
         timezone:
           type: string
         timezone_supported:
@@ -106,6 +111,7 @@ components:
       required:
         - id
         - display_name
+        - email
         - timezone
         - timezone_supported
         - token_balance
@@ -169,10 +175,10 @@ components:
           type: string
           format: date-time
           example: 2026-11-02T06:00:00.000Z
-        duration_slots:
+        kind:
+          $ref: "#/components/schemas/EventKind"
+        duration_bars:
           type: integer
-        rewardable:
-          type: boolean
         status:
           $ref: "#/components/schemas/EventStatus"
         version:
@@ -195,13 +201,20 @@ components:
         - breakdown_item_id
         - planned_start
         - planned_end
-        - duration_slots
-        - rewardable
+        - kind
+        - duration_bars
         - status
         - version
         - record
         - created_at
         - updated_at
+    EventKind:
+      type: string
+      enum:
+        - cadenza
+        - tutti
+      description: "cadenza: timed, rewarded focus work that never overlaps another
+        Cadenza. tutti: an ordinary event that overlaps freely."
     EventStatus:
       type: string
       enum:
@@ -210,6 +223,7 @@ components:
         - done
         - missed
         - cancelled
+      description: Tuttis are only ever planned or cancelled
     EventRecord:
       type:
         - object
@@ -239,11 +253,11 @@ components:
             - "null"
           format: date-time
           example: 2026-11-02T06:00:00.000Z
-        early_slots:
+        early_bars:
           type: integer
-        late_slots:
+        late_bars:
           type: integer
-        extended_slots:
+        extended_bars:
           type: integer
         finish_kind:
           $ref: "#/components/schemas/FinishKind"
@@ -266,14 +280,15 @@ components:
         - finish_tapped_at
         - recorded_start
         - recorded_end
-        - early_slots
-        - late_slots
-        - extended_slots
+        - early_bars
+        - late_bars
+        - extended_bars
         - finish_kind
         - tokens_awarded
         - original_planned_start
         - original_planned_end
         - rules_version
+      description: Start/finish record; Cadenzas only
     FinishKind:
       type:
         - string
@@ -300,17 +315,17 @@ components:
             - "null"
           format: date-time
           example: 2026-11-02T06:00:00.000Z
-        early_slots:
+        early_bars:
           type: integer
-        late_slots:
+        late_bars:
           type: integer
         event:
           $ref: "#/components/schemas/Event"
       required:
         - outcome
         - recorded_start
-        - early_slots
-        - late_slots
+        - early_bars
+        - late_bars
         - event
     ExtendResult:
       type: object
@@ -343,11 +358,12 @@ components:
               - planned_start
               - planned_end
               - version
+          description: Every Cadenza the cascade pushes, in start order
         day_end_warnings:
           type: array
           items:
             type: string
-          description: IDs of changed events that now end after the day end
+          description: IDs of changed Cadenzas that now end after the day end
         event:
           $ref: "#/components/schemas/Event"
       required:
@@ -385,21 +401,21 @@ components:
     TokenBreakdown:
       type: object
       properties:
-        planned_slots_completed:
+        planned_bars_completed:
           type: integer
-        early_slots_completed:
+        early_bars_completed:
           type: integer
-        extended_slots_completed:
+        extended_bars_completed:
           type: integer
-        auto_deduction_slots:
+        auto_deduction_bars:
           type: integer
         tokens:
           type: integer
       required:
-        - planned_slots_completed
-        - early_slots_completed
-        - extended_slots_completed
-        - auto_deduction_slots
+        - planned_bars_completed
+        - early_bars_completed
+        - extended_bars_completed
+        - auto_deduction_bars
         - tokens
     Calendar:
       type: object
@@ -408,17 +424,17 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/Event"
-        reminders:
+        cues:
           type: array
           items:
-            $ref: "#/components/schemas/ReminderOccurrence"
+            $ref: "#/components/schemas/CueOccurrence"
       required:
         - events
-        - reminders
-    ReminderOccurrence:
+        - cues
+    CueOccurrence:
       type: object
       properties:
-        reminder_id:
+        cue_id:
           type: string
         series_id:
           type: string
@@ -442,7 +458,7 @@ components:
         repeating:
           type: boolean
       required:
-        - reminder_id
+        - cue_id
         - series_id
         - title
         - notes
@@ -458,13 +474,13 @@ components:
         - skipped
         - snoozed
         - moved
-    ReminderPage:
+    CuePage:
       type: object
       properties:
         items:
           type: array
           items:
-            $ref: "#/components/schemas/Reminder"
+            $ref: "#/components/schemas/Cue"
         next_cursor:
           type:
             - string
@@ -472,7 +488,7 @@ components:
       required:
         - items
         - next_cursor
-    Reminder:
+    Cue:
       type: object
       properties:
         id:
@@ -526,19 +542,19 @@ components:
         - version
         - created_at
         - updated_at
-    ReminderEditResult:
+    CueEditResult:
       type: object
       properties:
-        reminder:
-          $ref: "#/components/schemas/Reminder"
+        cue:
+          $ref: "#/components/schemas/Cue"
         created:
           allOf:
-            - $ref: "#/components/schemas/Reminder"
+            - $ref: "#/components/schemas/Cue"
             - type:
                 - object
                 - "null"
       required:
-        - reminder
+        - cue
         - created
     EditScope:
       type: string
@@ -674,7 +690,7 @@ components:
           type:
             - string
             - "null"
-        duration_slots:
+        duration_bars:
           type: integer
         sessions_per_week:
           type:
@@ -684,7 +700,7 @@ components:
         - id
         - title
         - description
-        - duration_slots
+        - duration_bars
         - sessions_per_week
     LedgerPage:
       type: object
@@ -865,6 +881,118 @@ paths:
                 $ref: "#/components/schemas/Error"
         "422":
           description: The request breaks a rule
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /v1/auth/email/signup:
+    post:
+      tags:
+        - Auth
+      summary: Create an email + password account and sign in
+      description: The email is checked for format only and is not verified. Email
+        accounts are separate from Apple accounts.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                email:
+                  type: string
+                  maxLength: 254
+                  pattern: ^[^\s@]+@[^\s@]+\.[^\s@]+$
+                  example: ada@example.com
+                password:
+                  type: string
+                  minLength: 8
+                  maxLength: 128
+                display_name:
+                  type:
+                    - string
+                    - "null"
+                  maxLength: 100
+                timezone:
+                  type: string
+                  example: Asia/Shanghai
+                device_label:
+                  type:
+                    - string
+                    - "null"
+                  maxLength: 100
+              required:
+                - email
+                - password
+      responses:
+        "201":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Session"
+        "400":
+          description: Malformed request
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "409":
+          description: Conflict with the current state
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "422":
+          description: The request breaks a rule
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /v1/auth/email/signin:
+    post:
+      tags:
+        - Auth
+      summary: Sign in with email and password
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                email:
+                  type: string
+                  maxLength: 254
+                  pattern: ^[^\s@]+@[^\s@]+\.[^\s@]+$
+                  example: ada@example.com
+                password:
+                  type: string
+                  minLength: 1
+                  maxLength: 128
+                device_label:
+                  type:
+                    - string
+                    - "null"
+                  maxLength: 100
+              required:
+                - email
+                - password
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Session"
+        "400":
+          description: Malformed request
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          description: Missing or invalid credentials
           content:
             application/json:
               schema:
@@ -1111,10 +1239,11 @@ paths:
     post:
       tags:
         - Calendar
-      summary: Create an event
-      description: planned_start must be on a :00/:20/:40 mark (422 slot_misaligned)
-        and duration_slots a whole number ≥ 1 (422 invalid_duration). At most 2
-        events may overlap (409 overlap_limit).
+      summary: Create a Cadenza or a Tutti
+      description: planned_start must be on a :00/:20/:40 mark (422 bar_misaligned)
+        and duration_bars a whole number ≥ 1 (422 invalid_duration). A Cadenza
+        may not overlap another Cadenza (409 cadenza_overlap); Tuttis overlap
+        freely. `kind` defaults to cadenza.
       security:
         - Bearer: []
       parameters:
@@ -1149,11 +1278,11 @@ paths:
                   type: string
                   format: date-time
                   example: 2026-11-02T14:00:00+08:00
-                duration_slots:
+                kind:
+                  $ref: "#/components/schemas/EventKind"
+                duration_bars:
                   type: number
-                  description: Whole 20-minute slots, at least 1
-                rewardable:
-                  type: boolean
+                  description: Whole 20-minute bars, at least 1
                 goal_id:
                   type:
                     - string
@@ -1162,7 +1291,7 @@ paths:
               required:
                 - title
                 - planned_start
-                - duration_slots
+                - duration_bars
       responses:
         "201":
           description: Created
@@ -1236,9 +1365,11 @@ paths:
     patch:
       tags:
         - Calendar
-      summary: Edit or reschedule an event
+      summary: Edit, reschedule or switch the kind of an event
       description: Send the current `version`; a stale version returns 409
-        version_conflict. Only planned events can be rescheduled.
+        version_conflict. Only planned events can be rescheduled or switch
+        `kind` (409 invalid_state). Switching to a Cadenza runs the overlap
+        check (409 cadenza_overlap).
       security:
         - Bearer: []
       parameters:
@@ -1281,10 +1412,10 @@ paths:
                   type: string
                   format: date-time
                   example: 2026-11-02T14:00:00+08:00
-                duration_slots:
+                duration_bars:
                   type: number
-                rewardable:
-                  type: boolean
+                kind:
+                  $ref: "#/components/schemas/EventKind"
                 goal_id:
                   type:
                     - string
@@ -1382,11 +1513,12 @@ paths:
     post:
       tags:
         - Recording
-      summary: Record a start tap
-      description: "recorded_start = snap(tapped_at). Up to 2 slots early is allowed
-        (more: 422 too_early); an early start that would make 3 events overlap
-        returns 409 overlap_limit. A start that snaps to the planned end marks
-        the event missed."
+      summary: Record a Cadenza start tap
+      description: "Cadenzas only (a Tutti gets 409 not_cadenza). recorded_start =
+        snap(tapped_at). Up to 2 bars early is allowed (more: 422 too_early); an
+        early start that would overlap another Cadenza returns 409
+        cadenza_overlap. A start that snaps to the planned end marks the Cadenza
+        missed."
       security:
         - Bearer: []
       parameters:
@@ -1463,12 +1595,14 @@ paths:
     post:
       tags:
         - Recording
-      summary: Extend an event in progress by whole slots, pushing later events
-      description: "Allowed until 5 minutes after the planned end. Later events it
-        runs into are pushed by the same amount, in one transaction; every moved
-        event is returned. `dry_run: true` returns the preview without saving.
-        Rejected (409) if a pushed event is in progress or done
-        (pushed_event_locked) or the overlap limit would break."
+      summary: Extend a Cadenza in progress by whole bars, pushing later Cadenzas
+      description: "Cadenzas only (a Tutti gets 409 not_cadenza). Allowed until 5
+        minutes after the planned end. Later Cadenzas it runs into are pushed
+        only as far as needed (gaps are used up first), in one transaction;
+        Tuttis never move. Every moved Cadenza is returned. `dry_run: true`
+        returns the preview without saving. Rejected with 409
+        pushed_event_locked if a Cadenza that would be pushed is in progress or
+        done."
       security:
         - Bearer: []
       parameters:
@@ -1496,13 +1630,13 @@ paths:
             schema:
               type: object
               properties:
-                slots:
+                bars:
                   type: number
                 dry_run:
                   type: boolean
                   default: false
               required:
-                - slots
+                - bars
       responses:
         "200":
           description: OK
@@ -1544,10 +1678,11 @@ paths:
     post:
       tags:
         - Recording
-      summary: Record a finish tap and award tokens
-      description: A tap in (E−15, E+5] is on time; earlier taps shorten the event; a
-        tap after E+5 counts as auto-finish (one slot deducted); a finish that
-        snaps to the recorded start is abandoned.
+      summary: Record a Cadenza finish tap and award tokens
+      description: Cadenzas only (a Tutti gets 409 not_cadenza). A tap in (E−15, E+5]
+        is on time; earlier taps shorten the Cadenza; a tap after E+5 counts as
+        auto-finish (one bar deducted); a finish that snaps to the recorded
+        start is abandoned.
       security:
         - Bearer: []
       parameters:
@@ -1624,7 +1759,7 @@ paths:
     get:
       tags:
         - Calendar
-      summary: Events plus expanded reminder occurrences in [from, to)
+      summary: Events plus expanded cue occurrences in [from, to)
       description: What iOS uses to schedule its rolling window of local
         notifications. Repeat rules are expanded on the server. The range may
         span at most 62 days.
@@ -1664,11 +1799,11 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
-  /v1/reminders:
+  /v1/cues:
     get:
       tags:
-        - Reminders
-      summary: List reminder definitions
+        - Cues
+      summary: List cue definitions
       security:
         - Bearer: []
       parameters:
@@ -1691,7 +1826,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/ReminderPage"
+                $ref: "#/components/schemas/CuePage"
         "400":
           description: Malformed request
           content:
@@ -1706,8 +1841,8 @@ paths:
                 $ref: "#/components/schemas/Error"
     post:
       tags:
-        - Reminders
-      summary: Create a reminder (any minute; optional RFC 5545 RRULE)
+        - Cues
+      summary: Create a cue (any minute; optional RFC 5545 RRULE)
       security:
         - Bearer: []
       parameters:
@@ -1760,7 +1895,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/Reminder"
+                $ref: "#/components/schemas/Cue"
         "400":
           description: Malformed request
           content:
@@ -1779,11 +1914,11 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
-  /v1/reminders/{id}:
+  /v1/cues/{id}:
     get:
       tags:
-        - Reminders
-      summary: One reminder definition
+        - Cues
+      summary: One cue definition
       security:
         - Bearer: []
       parameters:
@@ -1799,7 +1934,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/Reminder"
+                $ref: "#/components/schemas/Cue"
         "401":
           description: Missing or invalid credentials
           content:
@@ -1814,9 +1949,9 @@ paths:
                 $ref: "#/components/schemas/Error"
     patch:
       tags:
-        - Reminders
-      summary: Edit a reminder
-      description: "A repeating reminder needs `scope`: `this` (one occurrence; needs
+        - Cues
+      summary: Edit a cue
+      description: "A repeating cue needs `scope`: `this` (one occurrence; needs
         `occurrence`), `following` (splits the series at `occurrence`; the new
         part is returned as `created`) or `all`."
       security:
@@ -1883,7 +2018,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/ReminderEditResult"
+                $ref: "#/components/schemas/CueEditResult"
         "400":
           description: Malformed request
           content:
@@ -1916,8 +2051,8 @@ paths:
                 $ref: "#/components/schemas/Error"
     delete:
       tags:
-        - Reminders
-      summary: Delete a reminder, one occurrence, or this and following
+        - Cues
+      summary: Delete a cue, one occurrence, or this and following
       security:
         - Bearer: []
       parameters:
@@ -1977,10 +2112,10 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
-  /v1/reminders/{id}/occurrences/{original_at}:
+  /v1/cues/{id}/occurrences/{original_at}:
     put:
       tags:
-        - Reminders
+        - Cues
       summary: Mark one occurrence done, skipped, snoozed or moved
       description: "`new_at` is required for snoozed and moved. `pending` clears the state."
       security:
@@ -2039,7 +2174,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/ReminderOccurrence"
+                $ref: "#/components/schemas/CueOccurrence"
         "400":
           description: Malformed request
           content:
@@ -2397,7 +2532,7 @@ paths:
       tags:
         - Goals & AI
       summary: "Poll a breakdown: status and suggested activities sized in 20-minute
-        slots"
+        bars"
       security:
         - Bearer: []
       parameters:
@@ -2432,7 +2567,8 @@ paths:
         - Goals & AI
       summary: Place chosen items on the calendar
       description: Creates one event per chosen item in a single transaction; any rule
-        violation rejects them all.
+        violation rejects them all. Each item becomes a Cadenza unless `kind`
+        says tutti.
       security:
         - Bearer: []
       parameters:
@@ -2472,7 +2608,9 @@ paths:
                         type: string
                         format: date-time
                         example: 2026-11-02T14:00:00+08:00
-                      duration_slots:
+                      kind:
+                        $ref: "#/components/schemas/EventKind"
+                      duration_bars:
                         type: number
                       title:
                         type: string

@@ -21,7 +21,7 @@ afterAll(async () => {
 describe('pg-boss jobs', () => {
   it('a start enqueues events.auto_finish at E + 5 in the same transaction', async () => {
     const { token } = await h.signIn();
-    const ev = (await h.request('POST', '/v1/events', { token, body: { title: 'x', planned_start: sh('14:00'), duration_slots: 3 } })).body;
+    const ev = (await h.request('POST', '/v1/events', { token, body: { title: 'x', planned_start: sh('14:00'), duration_bars: 3 } })).body;
     h.clock.set(sh('14:00'));
     expect((await h.request('POST', `/v1/events/${ev.id}/start`, { token, body: { tapped_at: sh('14:00') } })).status).toBe(200);
     const jobs = await boss.findJobs<{ event_id: string }>(JOBS.autoFinish, { data: { event_id: ev.id } });

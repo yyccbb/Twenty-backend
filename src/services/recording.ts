@@ -4,13 +4,14 @@ import { uuidv7 } from '../db/ids.js';
 import { eventChanges, eventRecords, events, users } from '../db/schema.js';
 import type { Deps } from '../deps.js';
 import { type AutoFinishJob, JOBS } from '../jobs/queue.js';
-import { AppError, invalidState, overlapLimit } from '../lib/errors.js';
+import { AppError, cadenzaOverlap, invalidState, notCadenza } from '../lib/errors.js';
 import { logger } from '../lib/logger.js';
 import { addDays, addMinutes, iso } from '../lib/time.js';
 import {
   DEFAULT_GRID_RULES,
   type TokenResult,
-  addSlots,
+  addBars,
+  barsBetween,
   computeTokens,
   planExtension,
   recordFinish,
@@ -23,7 +24,7 @@ import { getUserContext } from './users.js';
 
 const GRACE_MINUTES = DEFAULT_GRID_RULES.snapAfterMinutes;
 /** Upper bound on one extension call (the spec sets none). */
-export const MAX_EXTEND_SLOTS = 72;
+export const MAX_EXTEND_BARS = 72;
 
 /** Offline taps are accepted if the device time is within TAP_MAX_AGE_HOURS and not in the future (spec Q4). */
 function assertSaneTap(deps: Deps, tappedAt: Date): void {
@@ -47,6 +48,7 @@ export async function startEvent(deps: Deps, userId: string, eventId: string, ta
   return transaction(deps.database, async (tx) => {
     await lockUser(tx, userId);
     const { event, record } = await getOwnedEvent(tx.db, userId, eventId, true);
+    if (event.kind !== 'cadenza') throw notCadenza();
     // close_stale may have marked the event missed before a queued offline tap arrived; that tap still counts.
     const closedByJob = event.status === 'missed' && record === null;
     if (event.status !== 'planned' && !closedByJob) {
@@ -57,8 +59,8 @@ export async function startEvent(deps: Deps, userId: string, eventId: string, ta
     const calendar = (await loadCalendar(tx.db, userId, addMinutes(event.plannedStart, -60), end)).map(effectiveBlock);
     const result = recordStart({ plannedStart: event.plannedStart, plannedEnd: end, tappedAt, eventId, calendar });
     if (result.outcome === 'rejected') {
-      if (result.error === 'overlap_limit') throw overlapLimit(result.conflicts);
-      throw new AppError(422, 'too_early', 'An event can be started at most 2 slots (40 min) early');
+      if (result.error === 'cadenza_overlap') throw cadenzaOverlap(result.conflicts);
+      throw new AppError(422, 'too_early', 'A Cadenza can be started at most 2 bars (40 min) early');
     }
 
     const rule = await getActiveRewardRule(tx.db);
@@ -70,8 +72,8 @@ export async function startEvent(deps: Deps, userId: string, eventId: string, ta
         eventId,
         startTappedAt: tappedAt,
         recordedStart: started ? result.recorded_start : null,
-        earlySlots: started ? result.early_slots : 0,
-        lateSlots: started ? result.late_slots : 0,
+        earlyBars: started ? result.early_bars : 0,
+        lateBars: started ? result.late_bars : 0,
         originalPlannedStart: event.plannedStart,
         originalPlannedEnd: end,
         rulesVersion: rule.version,
@@ -86,8 +88,8 @@ export async function startEvent(deps: Deps, userId: string, eventId: string, ta
       .returning();
 
     if (started) {
-      if (result.early_slots > 0) {
-        await tx.db.insert(eventChanges).values({ id: uuidv7(), eventId, kind: 'early_start', deltaSlots: result.early_slots });
+      if (result.early_bars > 0) {
+        await tx.db.insert(eventChanges).values({ id: uuidv7(), eventId, kind: 'early_start', deltaBars: result.early_bars });
       }
       await scheduleAutoFinish(deps, tx, eventId, end);
     }
@@ -95,32 +97,32 @@ export async function startEvent(deps: Deps, userId: string, eventId: string, ta
     return {
       outcome: result.outcome,
       recorded_start: started ? iso(result.recorded_start) : null,
-      early_slots: started ? result.early_slots : 0,
-      late_slots: started ? result.late_slots : 0,
+      early_bars: started ? result.early_bars : 0,
+      late_bars: started ? result.late_bars : 0,
       event: eventDto({ event: updated!, record: rec! }),
     };
   });
 }
 
 const EXTEND_ERRORS = {
-  invalid_slots: [422, 'slots must be a whole number of slots, at least 1'],
+  invalid_bars: [422, 'bars must be a whole number of bars, at least 1'],
   not_found: [404, 'Event not found'],
-  not_in_progress: [409, 'Only an event in progress can be extended'],
+  not_cadenza: [409, 'Only Cadenzas can be started, extended or finished; this event is a Tutti'],
+  not_in_progress: [409, 'Only a Cadenza in progress can be extended'],
   window_closed: [409, 'The extend window closed 5 minutes after the planned end'],
-  pushed_event_locked: [409, 'The extension would push an event that is already in progress or done'],
-  overlap_limit: [409, 'The extension would make more than 2 events overlap'],
+  pushed_event_locked: [409, 'The extension would push a Cadenza that is already in progress or done'],
 } as const;
 
-export async function extendEvent(deps: Deps, userId: string, eventId: string, slots: number, dryRun: boolean) {
+export async function extendEvent(deps: Deps, userId: string, eventId: string, bars: number, dryRun: boolean) {
   return transaction(deps.database, async (tx) => {
     await lockUser(tx, userId);
     const now = deps.clock.now();
     const target = await getOwnedEvent(tx.db, userId, eventId, true);
-    if (slots > MAX_EXTEND_SLOTS) {
-      throw new AppError(422, 'invalid_slots', `At most ${MAX_EXTEND_SLOTS} slots can be added at once`);
+    if (bars > MAX_EXTEND_BARS) {
+      throw new AppError(422, 'invalid_bars', `At most ${MAX_EXTEND_BARS} bars can be added at once`);
     }
     const oldEnd = plannedEnd(target.event);
-    // Cascades only reach events that start after the old end; two weeks is far more than any real chain.
+    // Cascades only reach Cadenzas that start after the old end; two weeks is far more than any real chain.
     const rows = await loadCalendar(tx.db, userId, addDays(oldEnd, -1), addDays(oldEnd, 14));
     const byId = new Map(rows.map((r) => [r.event.id, r]));
     byId.set(target.event.id, target);
@@ -129,7 +131,7 @@ export async function extendEvent(deps: Deps, userId: string, eventId: string, s
     const plan = planExtension({
       calendar: [...byId.values()].map(effectiveBlock),
       eventId,
-      slots,
+      bars,
       now,
       timezone: ctx.timezone,
       dayEndLocalTime: ctx.dayEndLocalTime,
@@ -145,16 +147,16 @@ export async function extendEvent(deps: Deps, userId: string, eventId: string, s
     if (!dryRun) {
       [event] = (await tx.db
         .update(events)
-        .set({ durationSlots: event.durationSlots + slots, version: event.version + 1, updatedAt: now })
+        .set({ durationBars: event.durationBars + bars, version: event.version + 1, updatedAt: now })
         .where(eq(events.id, eventId))
         .returning()) as [typeof event];
       const [extendedRecord] = await tx.db
         .update(eventRecords)
-        .set({ extendedSlots: sql`${eventRecords.extendedSlots} + ${slots}`, updatedAt: now })
+        .set({ extendedBars: sql`${eventRecords.extendedBars} + ${bars}`, updatedAt: now })
         .where(eq(eventRecords.eventId, eventId))
         .returning();
       record = extendedRecord!;
-      await tx.db.insert(eventChanges).values({ id: uuidv7(), eventId, kind: 'extend', deltaSlots: slots });
+      await tx.db.insert(eventChanges).values({ id: uuidv7(), eventId, kind: 'extend', deltaBars: bars });
       for (const m of plan.moved) {
         const [shifted] = await tx.db
           .update(events)
@@ -162,9 +164,11 @@ export async function extendEvent(deps: Deps, userId: string, eventId: string, s
           .where(eq(events.id, m.id))
           .returning({ version: events.version });
         movedVersions.set(m.id, shifted!.version);
+        // Each Cadenza moves only as far as needed, so its shift can be smaller than the extension.
+        const deltaBars = barsBetween(byId.get(m.id)!.event.plannedStart, m.start);
         await tx.db
           .insert(eventChanges)
-          .values({ id: uuidv7(), eventId: m.id, kind: 'cascade_shift', deltaSlots: slots, causedByEventId: eventId });
+          .values({ id: uuidv7(), eventId: m.id, kind: 'cascade_shift', deltaBars, causedByEventId: eventId });
       }
       await scheduleAutoFinish(deps, tx, eventId, plan.new_end);
     }
@@ -210,7 +214,7 @@ async function settle(deps: Deps, tx: Tx, current: EventWithRecord, tappedAt: Da
     },
     rule,
   );
-  const awarded = event.rewardable ? tokens.tokens : 0;
+  const awarded = tokens.tokens;
   // A late-arriving offline tap can replace a job-made auto-finish; the ledger gets a correction entry.
   const correcting = event.status === 'done';
   const previous = record.tokensAwarded ?? 0;
@@ -254,6 +258,7 @@ export async function finishEvent(deps: Deps, userId: string, eventId: string, t
     await lockUser(tx, userId);
     const current = await getOwnedEvent(tx.db, userId, eventId, true);
     const { event, record } = current;
+    if (event.kind !== 'cadenza') throw notCadenza();
     if (event.status === 'in_progress') return settle(deps, tx, current, tappedAt);
 
     const graceEnd = addMinutes(plannedEnd(event), GRACE_MINUTES);
@@ -279,8 +284,8 @@ export async function autoFinishEvent(deps: Deps, eventId: string, expectedEnd: 
 }
 
 /**
- * The events.close_stale job: planned events whose end has passed become missed. It also auto-finishes
- * any in-progress event whose auto-finish job was lost, as a safety net.
+ * The events.close_stale job: planned Cadenzas whose end has passed become missed (Tuttis are left alone).
+ * It also auto-finishes any in-progress Cadenza whose auto-finish job was lost, as a safety net.
  */
 export async function closeStaleEvents(deps: Deps): Promise<{ missed: number; autoFinished: number }> {
   const now = deps.clock.now();
@@ -290,23 +295,24 @@ export async function closeStaleEvents(deps: Deps): Promise<{ missed: number; au
     .where(
       and(
         eq(events.status, 'planned'),
-        sql`${events.plannedStart} + ${events.durationSlots} * interval '20 minutes' <= ${now}`,
+        eq(events.kind, 'cadenza'),
+        sql`${events.plannedStart} + ${events.durationBars} * interval '20 minutes' <= ${now}`,
       ),
     )
     .returning({ id: events.id });
 
   const overdue = await deps.database.db
-    .select({ id: events.id, plannedStart: events.plannedStart, durationSlots: events.durationSlots })
+    .select({ id: events.id, plannedStart: events.plannedStart, durationBars: events.durationBars })
     .from(events)
     .where(
       and(
         eq(events.status, 'in_progress'),
-        sql`${events.plannedStart} + ${events.durationSlots} * interval '20 minutes' + interval '6 minutes' <= ${now}`,
+        sql`${events.plannedStart} + ${events.durationBars} * interval '20 minutes' + interval '6 minutes' <= ${now}`,
       ),
     );
   let autoFinished = 0;
   for (const e of overdue) {
-    if (await autoFinishEvent(deps, e.id, addSlots(e.plannedStart, e.durationSlots))) autoFinished++;
+    if (await autoFinishEvent(deps, e.id, addBars(e.plannedStart, e.durationBars))) autoFinished++;
   }
   if (missed.length || autoFinished) logger.info({ missed: missed.length, autoFinished }, 'closed stale events');
   return { missed: missed.length, autoFinished };

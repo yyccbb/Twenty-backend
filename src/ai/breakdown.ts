@@ -3,8 +3,8 @@ import { uuidv7 } from '../db/ids.js';
 import type { BreakdownItem } from '../db/schema.js';
 import type { AiMessage, AiProvider } from './provider.js';
 
-export const BREAKDOWN_PROMPT_VERSION = 'breakdown-v1';
-export const MAX_ITEM_SLOTS = 72;
+export const BREAKDOWN_PROMPT_VERSION = 'breakdown-v2';
+export const MAX_ITEM_BARS = 72;
 
 export class AiOutputError extends Error {}
 
@@ -18,10 +18,10 @@ export interface BreakdownInput {
 export function buildBreakdownMessages(input: BreakdownInput): AiMessage[] {
   const system = [
     'You help people turn a long-term goal into concrete, schedulable activities.',
-    'Time is planned in 20-minute slots. Every activity duration must be a whole number of slots (1 slot = 20 minutes).',
+    'Time is planned in 20-minute blocks called bars. Every activity duration must be a whole number of bars (1 bar = 20 minutes).',
     'Reply with one JSON object only, no prose, in exactly this shape:',
-    '{"summary": string, "items": [{"title": string, "description": string|null, "duration_slots": integer >= 1, "sessions_per_week": integer|null}]}',
-    `Return between 1 and ${input.maxItems} items. Keep titles under 80 characters. Prefer 1 to 6 slots per activity.`,
+    '{"summary": string, "items": [{"title": string, "description": string|null, "duration_bars": integer >= 1, "sessions_per_week": integer|null}]}',
+    `Return between 1 and ${input.maxItems} items. Keep titles under 80 characters. Prefer 1 to 6 bars per activity.`,
     'Answer in the same language as the goal.',
   ].join('\n');
   const user = JSON.stringify({
@@ -42,7 +42,7 @@ const numeric = z.union([z.number(), z.string().regex(/^\s*\d+(\.\d+)?\s*$/).tra
 const RawItem = z.object({
   title: z.string().trim().min(1),
   description: z.string().nullish(),
-  duration_slots: numeric.nullish(),
+  duration_bars: numeric.nullish(),
   duration_minutes: numeric.nullish(),
   sessions_per_week: numeric.nullish(),
 });
@@ -71,14 +71,14 @@ function extractJson(content: string): unknown {
   }
 }
 
-/** Repairs a duration to whole 20-minute slots, or returns null if it can't be repaired. */
-function repairSlots(item: z.infer<typeof RawItem>): number | null {
-  const raw = item.duration_slots ?? (item.duration_minutes != null ? item.duration_minutes / 20 : null);
+/** Repairs a duration to whole 20-minute bars, or returns null if it can't be repaired. */
+function repairBars(item: z.infer<typeof RawItem>): number | null {
+  const raw = item.duration_bars ?? (item.duration_minutes != null ? item.duration_minutes / 20 : null);
   if (raw == null || !Number.isFinite(raw) || raw <= 0) return null;
-  return Math.min(MAX_ITEM_SLOTS, Math.max(1, Math.round(raw)));
+  return Math.min(MAX_ITEM_BARS, Math.max(1, Math.round(raw)));
 }
 
-/** Validates model output with Zod: durations must be whole slots (repaired when possible); bad items are dropped. */
+/** Validates model output with Zod: durations must be whole bars (repaired when possible); bad items are dropped. */
 export function parseBreakdown(content: string, maxItems: number): { summary: string | null; items: BreakdownItem[] } {
   const parsed = RawBreakdown.safeParse(extractJson(content));
   if (!parsed.success) throw new AiOutputError('model output does not match the breakdown shape');
@@ -86,14 +86,14 @@ export function parseBreakdown(content: string, maxItems: number): { summary: st
   for (const candidate of parsed.data.items) {
     const item = RawItem.safeParse(candidate);
     if (!item.success) continue;
-    const slots = repairSlots(item.data);
-    if (slots === null) continue;
+    const bars = repairBars(item.data);
+    if (bars === null) continue;
     const sessions = item.data.sessions_per_week;
     items.push({
       id: uuidv7(),
       title: item.data.title.slice(0, 120),
       description: item.data.description?.trim() || null,
-      duration_slots: slots,
+      duration_bars: bars,
       sessions_per_week: sessions != null && Number.isInteger(sessions) && sessions >= 1 && sessions <= 21 ? sessions : null,
     });
     if (items.length === maxItems) break;

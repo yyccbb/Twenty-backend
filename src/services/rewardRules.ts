@@ -10,10 +10,10 @@ export interface VersionedRewardRule extends RewardRule {
 function toRule(row: typeof rewardRules.$inferSelect): VersionedRewardRule {
   return {
     version: row.version,
-    tokensPerSlot: row.tokensPerSlot,
-    earlySlotRate: Number(row.earlySlotRate),
-    extendedSlotRate: Number(row.extendedSlotRate),
-    autoFinishDeductionSlots: row.autoFinishDeductionSlots,
+    tokensPerBar: row.tokensPerBar,
+    earlyBarRate: Number(row.earlyBarRate),
+    extendedBarRate: Number(row.extendedBarRate),
+    autoFinishDeductionBars: row.autoFinishDeductionBars,
   };
 }
 

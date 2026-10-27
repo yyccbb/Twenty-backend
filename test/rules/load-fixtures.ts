@@ -1,7 +1,7 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import type { GridRules, RewardRule } from '../../src/rules/index.js';
+import type { EventKind, GridRules, RewardRule } from '../../src/rules/index.js';
 
 // The shared fixtures come from the vendor/Twenty submodule (`git submodule update --init`).
 // Set RULES_FIXTURES_PATH to test against another copy.
@@ -23,16 +23,15 @@ export interface FixtureCase {
 
 export interface Fixtures {
   constants: {
-    slot_minutes: number;
+    bar_minutes: number;
     snap_before_minutes: number;
     snap_after_minutes: number;
-    max_early_slots: number;
-    max_overlapping_events: number;
+    max_early_bars: number;
     reward: {
-      tokens_per_slot: number;
-      early_slot_rate: number;
-      extended_slot_rate: number;
-      auto_finish_deduction_slots: number;
+      tokens_per_bar: number;
+      early_bar_rate: number;
+      extended_bar_rate: number;
+      auto_finish_deduction_bars: number;
     };
   };
   groups: Record<string, FixtureCase[]>;
@@ -42,17 +41,16 @@ export const fixtures: Fixtures = JSON.parse(readFileSync(findFixtures(), 'utf8'
 
 const c = fixtures.constants;
 export const gridRules: GridRules = {
-  slotMinutes: c.slot_minutes,
+  barMinutes: c.bar_minutes,
   snapBeforeMinutes: c.snap_before_minutes,
   snapAfterMinutes: c.snap_after_minutes,
-  maxEarlySlots: c.max_early_slots,
-  maxOverlappingEvents: c.max_overlapping_events,
+  maxEarlyBars: c.max_early_bars,
 };
 export const rewardRule: RewardRule = {
-  tokensPerSlot: c.reward.tokens_per_slot,
-  earlySlotRate: c.reward.early_slot_rate,
-  extendedSlotRate: c.reward.extended_slot_rate,
-  autoFinishDeductionSlots: c.reward.auto_finish_deduction_slots,
+  tokensPerBar: c.reward.tokens_per_bar,
+  earlyBarRate: c.reward.early_bar_rate,
+  extendedBarRate: c.reward.extended_bar_rate,
+  autoFinishDeductionBars: c.reward.auto_finish_deduction_bars,
 };
 
 const ISO = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2}(\.\d+)?)?(Z|[+-]\d{2}:\d{2})$/;
@@ -70,6 +68,12 @@ export function normalize(value: unknown): unknown {
 
 export const toDate = (s: string | null): Date | null => (s === null ? null : new Date(s));
 
-export function toCalendar(list: Array<{ id: string; start: string; end: string; status?: string }>) {
-  return list.map((e) => ({ id: e.id, start: new Date(e.start), end: new Date(e.end), status: e.status as any }));
+export function toCalendar(list: Array<{ id: string; kind: string; start: string; end: string; status?: string }>) {
+  return list.map((e) => ({
+    id: e.id,
+    kind: e.kind as EventKind,
+    start: new Date(e.start),
+    end: new Date(e.end),
+    status: e.status as any,
+  }));
 }

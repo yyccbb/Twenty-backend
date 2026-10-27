@@ -3,10 +3,10 @@ import { type Db, type Tx, lockUser, transaction } from '../db/client.js';
 import { uuidv7 } from '../db/ids.js';
 import { eventRecords, events, goals } from '../db/schema.js';
 import type { Deps } from '../deps.js';
-import { AppError, invalidState, notFound, overlapLimit, versionConflict } from '../lib/errors.js';
+import { AppError, cadenzaOverlap, invalidState, notFound, versionConflict } from '../lib/errors.js';
 import { decodeCursor, encodeCursor } from '../lib/pagination.js';
 import { iso, isoOrNull } from '../lib/time.js';
-import { type CalendarEvent, type CreateResult, addSlots, validateEventBlock } from '../rules/index.js';
+import { type CalendarEvent, type CreateResult, type EventKind, addBars, validateEventBlock } from '../rules/index.js';
 
 export type EventRow = typeof events.$inferSelect;
 export type RecordRow = typeof eventRecords.$inferSelect;
@@ -16,24 +16,30 @@ export interface EventWithRecord {
 }
 
 /** Upper bound on a planned block (24 h). The spec sets no limit; this only guards against absurd input. */
-export const MAX_DURATION_SLOTS = 72;
+export const MAX_DURATION_BARS = 72;
 
-export const plannedEnd = (e: Pick<EventRow, 'plannedStart' | 'durationSlots'>) => addSlots(e.plannedStart, e.durationSlots);
+export const plannedEnd = (e: Pick<EventRow, 'plannedStart' | 'durationBars'>) => addBars(e.plannedStart, e.durationBars);
 
 /**
  * The block an event occupies for overlap checks and cascades: the plan while planned,
- * [recorded_start, E) while in progress, and the recorded block once done.
+ * [recorded_start, E) while in progress, and the recorded block once done. Only Cadenzas are ever started.
  */
 export function effectiveBlock({ event, record }: EventWithRecord): CalendarEvent {
   const end = plannedEnd(event);
   if (event.status === 'in_progress' && record?.recordedStart) {
-    return { id: event.id, start: record.recordedStart, end, status: event.status };
+    return { id: event.id, kind: event.kind, start: record.recordedStart, end, status: event.status };
   }
   if (event.status === 'done' && record?.recordedStart) {
     // Abandoned events have no recorded end and occupy nothing.
-    return { id: event.id, start: record.recordedStart, end: record.recordedEnd ?? record.recordedStart, status: 'done' };
+    return {
+      id: event.id,
+      kind: event.kind,
+      start: record.recordedStart,
+      end: record.recordedEnd ?? record.recordedStart,
+      status: 'done',
+    };
   }
-  return { id: event.id, start: event.plannedStart, end, status: event.status };
+  return { id: event.id, kind: event.kind, start: event.plannedStart, end, status: event.status };
 }
 
 export function eventDto({ event, record }: EventWithRecord) {
@@ -45,8 +51,8 @@ export function eventDto({ event, record }: EventWithRecord) {
     breakdown_item_id: event.breakdownItemId,
     planned_start: iso(event.plannedStart),
     planned_end: iso(plannedEnd(event)),
-    duration_slots: event.durationSlots,
-    rewardable: event.rewardable,
+    kind: event.kind,
+    duration_bars: event.durationBars,
     status: event.status,
     version: event.version,
     record: record
@@ -55,9 +61,9 @@ export function eventDto({ event, record }: EventWithRecord) {
           finish_tapped_at: isoOrNull(record.finishTappedAt),
           recorded_start: isoOrNull(record.recordedStart),
           recorded_end: isoOrNull(record.recordedEnd),
-          early_slots: record.earlySlots,
-          late_slots: record.lateSlots,
-          extended_slots: record.extendedSlots,
+          early_bars: record.earlyBars,
+          late_bars: record.lateBars,
+          extended_bars: record.extendedBars,
           finish_kind: record.finishKind,
           tokens_awarded: record.tokensAwarded,
           original_planned_start: iso(record.originalPlannedStart),
@@ -83,7 +89,7 @@ export async function loadCalendar(db: Db, userId: string, from: Date, to: Date)
         eq(events.userId, userId),
         notInArray(events.status, ['cancelled', 'missed']),
         sql`${events.plannedStart} - interval '1 hour' < ${to}`,
-        sql`${events.plannedStart} + ${events.durationSlots} * interval '20 minutes' > ${from}`,
+        sql`${events.plannedStart} + ${events.durationBars} * interval '20 minutes' > ${from}`,
       ),
     );
 }
@@ -101,21 +107,21 @@ export async function getOwnedEvent(db: Db, userId: string, eventId: string, for
 
 export function throwBlockError(result: Exclude<CreateResult, { ok: true }>): never {
   switch (result.error) {
-    case 'slot_misaligned':
-      throw new AppError(422, 'slot_misaligned', 'planned_start must be on a :00, :20 or :40 mark');
+    case 'bar_misaligned':
+      throw new AppError(422, 'bar_misaligned', 'planned_start must be on a :00, :20 or :40 mark');
     case 'invalid_duration':
-      throw new AppError(422, 'invalid_duration', 'duration_slots must be a whole number of 20-minute slots, at least 1');
-    case 'overlap_limit':
-      throw overlapLimit(result.conflicts);
+      throw new AppError(422, 'invalid_duration', 'duration_bars must be a whole number of 20-minute bars, at least 1');
+    case 'cadenza_overlap':
+      throw cadenzaOverlap(result.conflicts);
   }
 }
 
-export function assertDuration(slots: number): void {
-  if (!Number.isInteger(slots) || slots < 1 || slots > MAX_DURATION_SLOTS) {
+export function assertDuration(bars: number): void {
+  if (!Number.isInteger(bars) || bars < 1 || bars > MAX_DURATION_BARS) {
     throw new AppError(
       422,
       'invalid_duration',
-      `duration_slots must be a whole number of 20-minute slots between 1 and ${MAX_DURATION_SLOTS}`,
+      `duration_bars must be a whole number of 20-minute bars between 1 and ${MAX_DURATION_BARS}`,
     );
   }
 }
@@ -126,12 +132,22 @@ async function assertOwnedGoal(db: Db, userId: string, goalId: string | null | u
   if (!g) throw notFound('Goal');
 }
 
-/** Checks a block against the calendar (including blocks added earlier in the same transaction). */
-export async function checkBlock(tx: Tx, userId: string, start: Date, durationSlots: number, ignoreId?: string, extra: CalendarEvent[] = []) {
-  assertDuration(durationSlots);
-  const end = addSlots(start, durationSlots);
-  const calendar = [...(await loadCalendar(tx.db, userId, start, end)).map(effectiveBlock), ...extra];
-  const result = validateEventBlock({ calendar, start, end, eventId: ignoreId });
+/**
+ * Checks a block against the grid and, for a Cadenza, against the other Cadenzas on the calendar
+ * (including blocks added earlier in the same transaction).
+ */
+export async function checkBlock(
+  tx: Tx,
+  userId: string,
+  block: { kind: EventKind; start: Date; durationBars: number },
+  ignoreId?: string,
+  extra: CalendarEvent[] = [],
+) {
+  assertDuration(block.durationBars);
+  const { kind, start } = block;
+  const end = addBars(start, block.durationBars);
+  const calendar = kind === 'cadenza' ? [...(await loadCalendar(tx.db, userId, start, end)).map(effectiveBlock), ...extra] : [];
+  const result = validateEventBlock({ calendar, kind, start, end, eventId: ignoreId });
   if (!result.ok) throwBlockError(result);
   return end;
 }
@@ -140,15 +156,16 @@ export interface CreateEventInput {
   title: string;
   notes?: string | null;
   planned_start: string;
-  duration_slots: number;
-  rewardable?: boolean;
+  kind?: EventKind;
+  duration_bars: number;
   goal_id?: string | null;
   breakdown_item_id?: string | null;
 }
 
 export async function insertEvent(tx: Tx, deps: Deps, userId: string, input: CreateEventInput, extra: CalendarEvent[] = []) {
   const start = new Date(input.planned_start);
-  await checkBlock(tx, userId, start, input.duration_slots, undefined, extra);
+  const kind = input.kind ?? 'cadenza';
+  await checkBlock(tx, userId, { kind, start, durationBars: input.duration_bars }, undefined, extra);
   await assertOwnedGoal(tx.db, userId, input.goal_id);
   const now = deps.clock.now();
   const [event] = await tx.db
@@ -161,8 +178,8 @@ export async function insertEvent(tx: Tx, deps: Deps, userId: string, input: Cre
       goalId: input.goal_id ?? null,
       breakdownItemId: input.breakdown_item_id ?? null,
       plannedStart: start,
-      durationSlots: input.duration_slots,
-      rewardable: input.rewardable ?? true,
+      kind,
+      durationBars: input.duration_bars,
       createdAt: now,
       updatedAt: now,
     })
@@ -182,8 +199,8 @@ export interface UpdateEventInput {
   title?: string;
   notes?: string | null;
   planned_start?: string;
-  duration_slots?: number;
-  rewardable?: boolean;
+  duration_bars?: number;
+  kind?: EventKind;
   goal_id?: string | null;
 }
 
@@ -194,13 +211,19 @@ export async function updateEvent(deps: Deps, userId: string, eventId: string, i
     const ev = current.event;
     if (ev.version !== input.version) throw versionConflict();
 
-    const reschedules = input.planned_start !== undefined || input.duration_slots !== undefined;
-    if ((reschedules || input.rewardable !== undefined) && ev.status !== 'planned') {
+    const reschedules = input.planned_start !== undefined || input.duration_bars !== undefined;
+    const switchesKind = input.kind !== undefined && input.kind !== ev.kind;
+    if (reschedules && ev.status !== 'planned') {
       throw invalidState(`Only planned events can be rescheduled; this event is ${ev.status}`);
     }
+    if (switchesKind && ev.status !== 'planned') {
+      throw invalidState(`Only planned events can switch kind; this event is ${ev.status}`);
+    }
+    const kind = input.kind ?? ev.kind;
     const start = input.planned_start !== undefined ? new Date(input.planned_start) : ev.plannedStart;
-    const duration = input.duration_slots ?? ev.durationSlots;
-    if (reschedules) await checkBlock(tx, userId, start, duration, ev.id);
+    const duration = input.duration_bars ?? ev.durationBars;
+    // Switching to a Cadenza runs the overlap check (spec §3.6).
+    if (reschedules || switchesKind) await checkBlock(tx, userId, { kind, start, durationBars: duration }, ev.id);
     if (input.goal_id !== undefined) await assertOwnedGoal(tx.db, userId, input.goal_id);
 
     const [updated] = await tx.db
@@ -208,10 +231,10 @@ export async function updateEvent(deps: Deps, userId: string, eventId: string, i
       .set({
         ...(input.title !== undefined ? { title: input.title } : {}),
         ...(input.notes !== undefined ? { notes: input.notes } : {}),
-        ...(input.rewardable !== undefined ? { rewardable: input.rewardable } : {}),
+        kind,
         ...(input.goal_id !== undefined ? { goalId: input.goal_id } : {}),
         plannedStart: start,
-        durationSlots: duration,
+        durationBars: duration,
         version: ev.version + 1,
         updatedAt: deps.clock.now(),
       })
@@ -248,7 +271,7 @@ export async function listEvents(db: Db, userId: string, from: Date, to: Date, c
       and(
         eq(events.userId, userId),
         sql`${events.plannedStart} < ${to}`,
-        sql`${events.plannedStart} + ${events.durationSlots} * interval '20 minutes' > ${from}`,
+        sql`${events.plannedStart} + ${events.durationBars} * interval '20 minutes' > ${from}`,
         c
           ? or(gt(events.plannedStart, new Date(c.s)), and(eq(events.plannedStart, new Date(c.s)), gt(events.id, c.id)))
           : undefined,
@@ -274,7 +297,7 @@ export async function eventsInRange(db: Db, userId: string, from: Date, to: Date
       and(
         eq(events.userId, userId),
         sql`${events.plannedStart} < ${to}`,
-        sql`${events.plannedStart} + ${events.durationSlots} * interval '20 minutes' > ${from}`,
+        sql`${events.plannedStart} + ${events.durationBars} * interval '20 minutes' > ${from}`,
       ),
     )
     .orderBy(asc(events.plannedStart), asc(events.id));

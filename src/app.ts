@@ -11,7 +11,7 @@ import { eventRoutes } from './routes/events.js';
 import { goalRoutes } from './routes/goals.js';
 import { meRoutes } from './routes/me.js';
 import { idempotency, requestContext, requireAuth } from './routes/middleware.js';
-import { reminderRoutes } from './routes/reminders.js';
+import { cueRoutes } from './routes/cues.js';
 import { tokenRoutes } from './routes/tokens.js';
 
 export const OPENAPI_INFO = {
@@ -20,7 +20,7 @@ export const OPENAPI_INFO = {
     title: 'Twenty API',
     version: '1.0.0',
     description:
-      'Backend for Twenty. Times are ISO 8601 instants; all grid math uses 20-minute slots. Errors use { "error": { "code", "message" } }.',
+      'Backend for Twenty. Times are ISO 8601 instants; all grid math uses 20-minute bars. Errors use { "error": { "code", "message" } }.',
   },
 } as const;
 
@@ -56,7 +56,7 @@ export function createApp(deps: Deps) {
     (c) => c.json({ status: 'ok' as const }, 200),
   );
 
-  for (const register of [authRoutes, meRoutes, eventRoutes, calendarRoutes, reminderRoutes, goalRoutes, tokenRoutes]) {
+  for (const register of [authRoutes, meRoutes, eventRoutes, calendarRoutes, cueRoutes, goalRoutes, tokenRoutes]) {
     register(app, deps);
   }
 

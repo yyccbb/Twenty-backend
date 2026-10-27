@@ -17,7 +17,7 @@ export const Uuid = z.uuid();
 export const ErrorSchema = z
   .object({
     error: z.object({
-      code: z.string().openapi({ example: 'overlap_limit' }),
+      code: z.string().openapi({ example: 'cadenza_overlap' }),
       message: z.string(),
       conflicts: z.array(z.string()).optional().openapi({ description: 'Sorted IDs of the conflicting events' }),
     }),

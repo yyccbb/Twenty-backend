@@ -26,5 +26,7 @@ export const notFound = (what: string) => new AppError(404, 'not_found', `${what
 export const invalidState = (message: string) => new AppError(409, 'invalid_state', message);
 export const versionConflict = () =>
   new AppError(409, 'version_conflict', 'The resource was changed by another request; reload and retry');
-export const overlapLimit = (conflicts: string[]) =>
-  new AppError(409, 'overlap_limit', 'At most 2 events may overlap at any moment', conflicts);
+export const cadenzaOverlap = (conflicts: string[]) =>
+  new AppError(409, 'cadenza_overlap', 'A Cadenza may not overlap another Cadenza', conflicts);
+export const notCadenza = () =>
+  new AppError(409, 'not_cadenza', 'Only Cadenzas can be started, extended or finished; this event is a Tutti');

@@ -1,8 +1,10 @@
 export type EventStatus = 'planned' | 'in_progress' | 'done' | 'missed' | 'cancelled';
+export type EventKind = 'cadenza' | 'tutti';
 
 /** An event's effective block, half-open [start, end). */
 export interface CalendarEvent {
   id: string;
+  kind: EventKind;
   start: Date;
   end: Date;
   status?: EventStatus;
@@ -13,27 +15,24 @@ export function isActive(e: CalendarEvent): boolean {
   return e.status !== 'cancelled' && e.status !== 'missed' && e.end.getTime() > e.start.getTime();
 }
 
+/** Active Cadenzas are the only events the overlap rule and the cascade look at (spec §3.6). */
+export function isActiveCadenza(e: CalendarEvent): boolean {
+  return e.kind === 'cadenza' && isActive(e);
+}
+
 /**
- * Returns the sorted IDs of the other events that, together with `subject`,
- * exceed `maxOverlapping` at some moment, or null if the subject fits.
+ * Returns the sorted IDs of the other Cadenzas that `subject` (a Cadenza block) would overlap,
+ * or null if it fits. Tuttis overlap anything.
  */
-export function findOverlapConflicts(
+export function findCadenzaConflicts(
   calendar: readonly CalendarEvent[],
   subject: { id?: string; start: Date; end: Date },
-  maxOverlapping: number,
 ): string[] | null {
   const s = subject.start.getTime();
   const e = subject.end.getTime();
-  const others = calendar.filter(
-    (c) => c.id !== subject.id && isActive(c) && c.start.getTime() < e && c.end.getTime() > s,
-  );
-  // The number of active events only rises at a start, so those are the only moments to check.
-  const moments = [s, ...others.map((o) => o.start.getTime()).filter((t) => t > s)].sort((a, b) => a - b);
-  for (const m of moments) {
-    const active = others.filter((o) => o.start.getTime() <= m && o.end.getTime() > m);
-    if (active.length >= maxOverlapping) {
-      return active.map((o) => o.id).sort();
-    }
-  }
-  return null;
+  const conflicts = calendar
+    .filter((c) => c.id !== subject.id && isActiveCadenza(c) && c.start.getTime() < e && c.end.getTime() > s)
+    .map((c) => c.id)
+    .sort();
+  return conflicts.length > 0 ? conflicts : null;
 }

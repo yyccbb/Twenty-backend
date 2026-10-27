@@ -46,8 +46,8 @@ describe('AI breakdown', () => {
 
     await runQueuedBreakdowns();
     const done = await h.request('GET', `/v1/breakdowns/${queued.body.breakdown_id}`, { token });
-    expect(done.body).toMatchObject({ status: 'done', model: 'fake-model', prompt_version: 'breakdown-v1' });
-    expect(done.body.items.map((i: any) => i.duration_slots)).toEqual([3, 2, 1]);
+    expect(done.body).toMatchObject({ status: 'done', model: 'fake-model', prompt_version: 'breakdown-v2' });
+    expect(done.body.items.map((i: any) => i.duration_bars)).toEqual([3, 2, 1]);
     expect(h.ai.calls.at(-1)![1]!.content).toContain('mornings only');
 
     const [first, second] = done.body.items;
@@ -56,23 +56,30 @@ describe('AI breakdown', () => {
       body: {
         items: [
           { item_id: first.id, planned_start: sh('07:00', '2026-11-03') },
-          { item_id: second.id, planned_start: sh('07:00', '2026-11-03') },
           { item_id: second.id, planned_start: sh('07:20', '2026-11-03') },
         ],
       },
     });
-    expect(conflict.body.error.code).toBe('overlap_limit');
+    expect(conflict.body.error.code).toBe('cadenza_overlap');
     const range = `from=${encodeURIComponent(sh('00:00', '2026-11-03'))}&to=${encodeURIComponent(sh('00:00', '2026-11-04'))}`;
     expect((await h.request('GET', `/v1/events?${range}`, { token })).body.items).toHaveLength(0);
 
     const accepted = await h.request('POST', `/v1/breakdowns/${done.body.id}/accept`, {
       token,
-      body: { items: [{ item_id: first.id, planned_start: sh('07:00', '2026-11-03') }, { item_id: second.id, planned_start: sh('08:00', '2026-11-03') }] },
+      body: {
+        items: [
+          { item_id: first.id, planned_start: sh('07:00', '2026-11-03') },
+          { item_id: second.id, planned_start: sh('08:00', '2026-11-03') },
+          // A Tutti may overlap the Cadenzas.
+          { item_id: second.id, planned_start: sh('07:20', '2026-11-03'), kind: 'tutti' },
+        ],
+      },
     });
     expect(accepted.status).toBe(201);
-    expect(accepted.body.events.map((e: any) => [e.title, e.duration_slots, e.goal_id, e.breakdown_item_id])).toEqual([
-      [first.title, 3, g.id, first.id],
-      [second.title, 2, g.id, second.id],
+    expect(accepted.body.events.map((e: any) => [e.title, e.kind, e.duration_bars, e.goal_id, e.breakdown_item_id])).toEqual([
+      [first.title, 'cadenza', 3, g.id, first.id],
+      [second.title, 'cadenza', 2, g.id, second.id],
+      [second.title, 'tutti', 2, g.id, second.id],
     ]);
   });
 

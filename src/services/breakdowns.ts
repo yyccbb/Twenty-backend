@@ -8,7 +8,7 @@ import { type BreakdownJob, JOBS } from '../jobs/queue.js';
 import { AppError, invalidState, notFound } from '../lib/errors.js';
 import { logger } from '../lib/logger.js';
 import { iso } from '../lib/time.js';
-import { type CalendarEvent, addSlots, localParts, localToUtc } from '../rules/index.js';
+import { type CalendarEvent, type EventKind, addBars, localParts, localToUtc } from '../rules/index.js';
 import { eventDto, insertEvent } from './events.js';
 import { getOwnedGoal } from './goals.js';
 import { getUserContext } from './users.js';
@@ -127,12 +127,13 @@ export async function runBreakdownJob(deps: Deps, breakdownId: string, opts: { f
 export interface AcceptItem {
   item_id: string;
   planned_start: string;
-  duration_slots?: number;
+  kind?: EventKind;
+  duration_bars?: number;
   title?: string;
   notes?: string | null;
 }
 
-/** Places chosen breakdown items on the calendar as events, all in one transaction. */
+/** Places chosen breakdown items on the calendar as events (Cadenzas unless `kind` says otherwise), all in one transaction. */
 export async function acceptBreakdown(deps: Deps, userId: string, id: string, items: AcceptItem[]) {
   return transaction(deps.database, async (tx) => {
     await lockUser(tx, userId);
@@ -146,7 +147,8 @@ export async function acceptBreakdown(deps: Deps, userId: string, id: string, it
     for (const choice of items) {
       const item = byId.get(choice.item_id);
       if (!item) throw new AppError(422, 'unknown_item', `Item ${choice.item_id} is not part of this breakdown`);
-      const slots = choice.duration_slots ?? item.duration_slots;
+      const bars = choice.duration_bars ?? item.duration_bars;
+      const kind = choice.kind ?? 'cadenza';
       const row = await insertEvent(
         tx,
         deps,
@@ -155,13 +157,14 @@ export async function acceptBreakdown(deps: Deps, userId: string, id: string, it
           title: choice.title ?? item.title,
           notes: choice.notes !== undefined ? choice.notes : item.description,
           planned_start: choice.planned_start,
-          duration_slots: slots,
+          kind,
+          duration_bars: bars,
           goal_id: b.goalId,
           breakdown_item_id: item.id,
         },
         added,
       );
-      added.push({ id: row.event.id, start: row.event.plannedStart, end: addSlots(row.event.plannedStart, slots), status: 'planned' });
+      added.push({ id: row.event.id, kind, start: row.event.plannedStart, end: addBars(row.event.plannedStart, bars), status: 'planned' });
       created.push(eventDto(row));
     }
     return { events: created };

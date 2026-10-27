@@ -46,7 +46,7 @@ describe('token ledger', () => {
 
   it('concurrent finishes of one event pay exactly once', async () => {
     const { token, userId } = await h.signIn();
-    const ev = (await h.request('POST', '/v1/events', { token, body: { title: 'x', planned_start: sh('14:00'), duration_slots: 3 } })).body;
+    const ev = (await h.request('POST', '/v1/events', { token, body: { title: 'x', planned_start: sh('14:00'), duration_bars: 3 } })).body;
     h.clock.set(sh('14:00'));
     await h.request('POST', `/v1/events/${ev.id}/start`, { token, body: { tapped_at: sh('14:00') } });
     h.clock.set(sh('15:00'));
@@ -104,7 +104,7 @@ describe('reward rule sync', () => {
     await syncRewardRule(h.database.pool);
     expect((await getActiveRewardRule(h.database.db)).version).toBe(1);
 
-    const changed = { ...DEFAULT_REWARD_RULE, tokensPerSlot: DEFAULT_REWARD_RULE.tokensPerSlot + 2 };
+    const changed = { ...DEFAULT_REWARD_RULE, tokensPerBar: DEFAULT_REWARD_RULE.tokensPerBar + 2 };
     await syncRewardRule(h.database.pool, changed);
     await syncRewardRule(h.database.pool, changed);
     expect(await getActiveRewardRule(h.database.db)).toStrictEqual({ version: 2, ...changed });

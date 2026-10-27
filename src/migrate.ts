@@ -27,14 +27,14 @@ export async function runMigrations(connectionString: string, folder = defaultFo
 export async function syncRewardRule(pool: pg.Pool, r: RewardRule = DEFAULT_REWARD_RULE) {
   const { rows } = await pool.query<{ version: number }>(
     `WITH latest AS (SELECT * FROM reward_rules ORDER BY version DESC LIMIT 1)
-     INSERT INTO reward_rules (version, tokens_per_slot, early_slot_rate, extended_slot_rate, auto_finish_deduction_slots)
+     INSERT INTO reward_rules (version, tokens_per_bar, early_bar_rate, extended_bar_rate, auto_finish_deduction_bars)
      SELECT COALESCE((SELECT version FROM latest), 0) + 1, $1::int, $2::numeric, $3::numeric, $4::int
      WHERE NOT EXISTS (
        SELECT 1 FROM latest
-       WHERE tokens_per_slot = $1::int AND early_slot_rate = $2::numeric
-         AND extended_slot_rate = $3::numeric AND auto_finish_deduction_slots = $4::int)
+       WHERE tokens_per_bar = $1::int AND early_bar_rate = $2::numeric
+         AND extended_bar_rate = $3::numeric AND auto_finish_deduction_bars = $4::int)
      RETURNING version`,
-    [r.tokensPerSlot, r.earlySlotRate, r.extendedSlotRate, r.autoFinishDeductionSlots],
+    [r.tokensPerBar, r.earlyBarRate, r.extendedBarRate, r.autoFinishDeductionBars],
   );
   if (rows[0]) logger.info({ version: rows[0].version, rule: r }, 'reward rule updated from fixture constants');
 }

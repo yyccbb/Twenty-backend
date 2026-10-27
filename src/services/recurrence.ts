@@ -15,7 +15,7 @@ export interface RecurrenceDef {
 const DAY_MS = 86_400_000;
 const MAX_OCCURRENCES = 5000;
 
-/** Accepts "FREQ=..." or "RRULE:FREQ=...". DTSTART and TZID come from the reminder itself, not the string. */
+/** Accepts "FREQ=..." or "RRULE:FREQ=...". DTSTART and TZID come from the cue itself, not the string. */
 export function normalizeRrule(input: string): string {
   const body = input.trim().replace(/^RRULE:/i, '').toUpperCase();
   if (!/(^|;)FREQ=/.test(body) || /DTSTART|TZID|\n/.test(body)) {

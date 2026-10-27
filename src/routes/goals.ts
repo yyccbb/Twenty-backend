@@ -2,7 +2,7 @@ import { createRoute, z } from '@hono/zod-openapi';
 import { acceptBreakdown, getBreakdown, requestBreakdown } from '../services/breakdowns.js';
 import { createGoal, deleteGoal, getOwnedGoal, goalDto, listGoals, updateGoal } from '../services/goals.js';
 import { DateTime, IdParam, IdempotencyHeaders, PageQuery, type RouteModule, Uuid, body, errors, json, security } from './common.js';
-import { BreakdownSchema, EventSchema, GoalSchema } from './schemas.js';
+import { BreakdownSchema, EventKind, EventSchema, GoalSchema } from './schemas.js';
 
 const TargetDate = z.iso.date().nullish();
 const GoalStatus = z.enum(['active', 'achieved', 'archived']);
@@ -135,7 +135,7 @@ export const goalRoutes: RouteModule = (app, deps) => {
       method: 'get',
       path: '/v1/breakdowns/{id}',
       tags: ['Goals & AI'],
-      summary: 'Poll a breakdown: status and suggested activities sized in 20-minute slots',
+      summary: 'Poll a breakdown: status and suggested activities sized in 20-minute bars',
       security,
       request: { params: IdParam },
       responses: { 200: json(BreakdownSchema), ...errors(401, 404) },
@@ -149,7 +149,8 @@ export const goalRoutes: RouteModule = (app, deps) => {
       path: '/v1/breakdowns/{id}/accept',
       tags: ['Goals & AI'],
       summary: 'Place chosen items on the calendar',
-      description: 'Creates one event per chosen item in a single transaction; any rule violation rejects them all.',
+      description:
+        'Creates one event per chosen item in a single transaction; any rule violation rejects them all. Each item becomes a Cadenza unless `kind` says tutti.',
       security,
       request: {
         params: IdParam,
@@ -161,7 +162,8 @@ export const goalRoutes: RouteModule = (app, deps) => {
                 z.object({
                   item_id: Uuid,
                   planned_start: DateTime,
-                  duration_slots: z.number().optional(),
+                  kind: EventKind.default('cadenza'),
+                  duration_bars: z.number().optional(),
                   title: z.string().min(1).max(200).optional(),
                   notes: z.string().max(5000).nullable().optional(),
                 }),

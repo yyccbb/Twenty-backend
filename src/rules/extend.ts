@@ -1,12 +1,12 @@
-import { type GridRules, DEFAULT_GRID_RULES, MINUTE_MS, slotMs } from './constants.js';
-import { type CalendarEvent, findOverlapConflicts, isActive } from './overlap.js';
+import { type GridRules, DEFAULT_GRID_RULES, MINUTE_MS, barMs } from './constants.js';
+import { type CalendarEvent, isActiveCadenza } from './overlap.js';
 import { dayEndAfter } from './timezone.js';
 
 export interface ExtendInput {
-  /** Every event near the target, using effective blocks ([recorded_start, E) for started events). */
+  /** Every event near the target, using effective blocks ([recorded_start, E) for started Cadenzas). */
   calendar: readonly CalendarEvent[];
   eventId: string;
-  slots: number;
+  bars: number;
   now: Date;
   timezone: string;
   dayEndLocalTime: string;
@@ -20,17 +20,22 @@ export interface MovedEvent {
 
 export type ExtendResult =
   | { ok: true; new_end: Date; moved: MovedEvent[]; day_end_warnings: string[] }
-  | { ok: false; error: 'invalid_slots' | 'not_found' | 'not_in_progress' | 'window_closed' }
-  | { ok: false; error: 'pushed_event_locked' | 'overlap_limit'; conflicts: string[] };
+  | { ok: false; error: 'invalid_bars' | 'not_found' | 'not_cadenza' | 'not_in_progress' | 'window_closed' }
+  | { ok: false; error: 'pushed_event_locked'; conflicts: string[] };
+
+const byStart = (a: CalendarEvent, b: CalendarEvent) =>
+  a.start.getTime() - b.start.getTime() || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
 
 /**
- * Extends an in-progress event by whole slots and pushes later events in a cascade (spec §3.5).
- * Every pushed event shifts by the full extension; events already in progress or done can't move.
+ * Extends an in-progress Cadenza by whole bars and pushes later Cadenzas in a cascade (spec §3.5).
+ * Each pushed Cadenza moves only as far as needed: it starts exactly at the previous one's new end,
+ * so gaps are used up first. Tuttis never move, and Cadenzas in progress or done can't.
  */
 export function planExtension(input: ExtendInput, rules: GridRules = DEFAULT_GRID_RULES): ExtendResult {
-  if (!Number.isInteger(input.slots) || input.slots < 1) return { ok: false, error: 'invalid_slots' };
+  if (!Number.isInteger(input.bars) || input.bars < 1) return { ok: false, error: 'invalid_bars' };
   const target = input.calendar.find((e) => e.id === input.eventId);
   if (!target) return { ok: false, error: 'not_found' };
+  if (target.kind !== 'cadenza') return { ok: false, error: 'not_cadenza' };
   if (target.status !== 'in_progress') return { ok: false, error: 'not_in_progress' };
 
   const oldEnd = target.end.getTime();
@@ -38,50 +43,30 @@ export function planExtension(input: ExtendInput, rules: GridRules = DEFAULT_GRI
     return { ok: false, error: 'window_closed' };
   }
 
-  const delta = input.slots * slotMs(rules);
-  const candidates = input.calendar.filter((e) => e.id !== target.id && isActive(e));
-  const moved = new Map<string, MovedEvent>();
-  const locked = new Set<string>();
+  const newEnd = new Date(oldEnd + input.bars * barMs(rules));
+  const later = input.calendar
+    .filter((e) => e.id !== target.id && isActiveCadenza(e) && e.start.getTime() >= target.start.getTime())
+    .sort(byStart);
 
-  // Each moved block newly occupies [old end, old end + delta); anything starting there is pushed too.
-  const ranges: Array<[number, number]> = [[oldEnd, oldEnd + delta]];
-  while (ranges.length > 0) {
-    const [from, to] = ranges.shift()!;
-    for (const e of candidates) {
-      const s = e.start.getTime();
-      if (s < from || s >= to || moved.has(e.id) || locked.has(e.id)) continue;
-      if (e.status === 'in_progress' || e.status === 'done') {
-        locked.add(e.id);
-        continue;
-      }
-      moved.set(e.id, { id: e.id, start: new Date(s + delta), end: new Date(e.end.getTime() + delta) });
-      ranges.push([e.end.getTime(), e.end.getTime() + delta]);
-    }
+  const moved: MovedEvent[] = [];
+  const locked: string[] = [];
+  let edge = newEnd.getTime();
+  for (const e of later) {
+    const s = e.start.getTime();
+    if (s >= edge) break;
+    if (e.status === 'in_progress' || e.status === 'done') locked.push(e.id);
+    const end = edge + (e.end.getTime() - s);
+    moved.push({ id: e.id, start: new Date(edge), end: new Date(end) });
+    edge = end;
   }
-  if (locked.size > 0) return { ok: false, error: 'pushed_event_locked', conflicts: [...locked].sort() };
-
-  const newEnd = new Date(oldEnd + delta);
-  const after: CalendarEvent[] = input.calendar.map((e) => {
-    if (e.id === target.id) return { ...e, end: newEnd };
-    const m = moved.get(e.id);
-    return m ? { ...e, start: m.start, end: m.end } : e;
-  });
-
-  const movedList = [...moved.values()].sort(
-    (a, b) => a.start.getTime() - b.start.getTime() || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0),
-  );
-  const changed = [{ id: target.id, start: target.start, end: newEnd }, ...movedList];
-  for (const subject of changed) {
-    const conflicts = findOverlapConflicts(after, subject, rules.maxOverlappingEvents);
-    if (conflicts) return { ok: false, error: 'overlap_limit', conflicts };
-  }
+  if (locked.length > 0) return { ok: false, error: 'pushed_event_locked', conflicts: locked.sort() };
 
   const warnings: string[] = [];
-  const originalStart = new Map(input.calendar.map((e) => [e.id, e.start]));
-  for (const c of changed) {
-    const dayEnd = dayEndAfter(originalStart.get(c.id)!, input.timezone, input.dayEndLocalTime);
+  for (const c of [{ id: target.id, start: target.start, end: newEnd }, ...moved]) {
+    const originalStart = input.calendar.find((e) => e.id === c.id)!.start;
+    const dayEnd = dayEndAfter(originalStart, input.timezone, input.dayEndLocalTime);
     if (c.end.getTime() > dayEnd.getTime()) warnings.push(c.id);
   }
 
-  return { ok: true, new_end: newEnd, moved: movedList, day_end_warnings: warnings.sort() };
+  return { ok: true, new_end: newEnd, moved, day_end_warnings: warnings.sort() };
 }

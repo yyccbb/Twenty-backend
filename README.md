@@ -3,7 +3,7 @@
 API and background worker for Twenty. The design spec is
 `vendor/Twenty/docs/architecture/backend-tech-stack.md` (the `Twenty` repo, a git submodule); `AGENTS.md` summarises it.
 
-TypeScript on Node 22 · Hono + `@hono/zod-openapi` · PostgreSQL 17 + Drizzle · pg-boss · Sign in with Apple + own JWTs · Qwen (Model Studio) behind `AiProvider`.
+TypeScript on Node 22 · Hono + `@hono/zod-openapi` · PostgreSQL 17 + Drizzle · pg-boss · Sign in with Apple or email + password, with own JWTs · Qwen (Model Studio) behind `AiProvider`.
 
 ## Run it
 
@@ -35,10 +35,10 @@ Production is `docker compose up -d` (Caddy + api + worker + postgres, plus a on
 ## Layout
 
 ```
-src/rules/     pure 20-min grid, snap, start, finish, extend/cascade, overlap, tokens, time zones (no I/O)
-src/services/  events, recording, ledger, reminders (+ RRULE expansion), goals, breakdowns, badges, users
+src/rules/     pure 20-min grid, snap, start, finish, extend/cascade, Cadenza overlap, tokens, time zones (no I/O)
+src/services/  events, recording, ledger, cues (+ RRULE expansion), goals, breakdowns, badges, users
 src/routes/    Hono routes + Zod schemas (the OpenAPI source)
-src/auth/      Apple ID token verification, JWT access tokens, rotating refresh tokens
+src/auth/      Apple ID token verification, email/password hashing, JWT access tokens, rotating refresh tokens
 src/ai/        AiProvider interface, qwen.ts, fake.ts, breakdown prompt + output validation
 src/jobs/      pg-boss queue names, options and handlers
 src/db/        Drizzle schema, migrations (plain SQL), UUIDv7
@@ -66,18 +66,20 @@ These are my calls; change them if they're wrong:
    auto-finish, and the difference is posted as an `adjustment` ledger entry.
 2. **`events.close_stale` also auto-finishes** in-progress events more than 6 minutes past `E`, in case their
    auto-finish job was lost.
-3. **Account deletion** deletes all personal data but keeps a stripped `users` row (no Apple ID, no name), because
-   the append-only ledger references it. Signing in again with the same Apple ID creates a new account.
+3. **Account deletion** deletes all personal data but keeps a stripped `users` row (no Apple ID, email, password or name), because
+   the append-only ledger references it. Signing in again with the same Apple ID or email creates a new account.
 4. **Unsupported time zones** (non-whole-hour) are rejected with `422 unsupported_timezone` at sign-in and in
    settings. `GET /v1/me` reports `timezone_supported`.
 5. **Day end** for a pushed event is the first `day_end_local_time` strictly after the event's start (pre-push).
-6. **Reminders:** a deleted single occurrence is stored as occurrence status `cancelled` (an addition to
+6. **Cues:** a deleted single occurrence is stored as occurrence status `cancelled` (an addition to
    done/skipped/snoozed/moved). Editing one occurrence's content creates a standalone copy in the same series.
-   `DELETE /v1/reminders/{id}` takes `scope` and `occurrence` as query parameters. Splitting a `COUNT` rule
-   carries the remaining count into the new part. Scoped edits apply to the reminder row you name, not to
+   `DELETE /v1/cues/{id}` takes `scope` and `occurrence` as query parameters. Splitting a `COUNT` rule
+   carries the remaining count into the new part. Scoped edits apply to the cue row you name, not to
    every row in the series.
-7. **Caps the spec doesn't set:** an event is at most 72 slots (24 h), one extension at most 72 slots, `GET
+7. **Caps the spec doesn't set:** an event is at most 72 bars (24 h), one extension at most 72 bars, `GET
    /v1/events` spans at most 92 days and `GET /v1/calendar` at most 62.
-8. **Abandoned events** occupy no time for overlap checks.
+8. **Abandoned Cadenzas** occupy no time for overlap checks.
 9. The **daily AI limit** counts breakdowns since local midnight in the user's time zone.
 10. Concurrent refreshes with the same refresh token count as reuse and revoke every session (there's no grace window).
+11. **Default kind:** `POST /v1/events` without `kind` creates a Cadenza, matching the spec's default for accepted
+    breakdown items.

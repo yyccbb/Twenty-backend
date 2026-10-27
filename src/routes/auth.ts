@@ -1,9 +1,14 @@
 import { createRoute, z } from '@hono/zod-openapi';
-import { logout, refreshSession, signInWithApple } from '../auth/sessions.js';
+import { logout, refreshSession, signInWithApple, signInWithEmail, signUpWithEmail } from '../auth/sessions.js';
 import { type RouteModule, body, errors, json } from './common.js';
 import { SessionSchema } from './schemas.js';
 
 const SignInResult = SessionSchema.extend({ created: z.boolean() }).openapi('SignInResult');
+
+// Format check only: addresses are not verified in the MVP.
+const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+const Email = z.string().trim().max(254).regex(EMAIL_PATTERN, 'Not a valid email address').openapi({ example: 'ada@example.com' });
+const Password = z.string().min(8).max(128);
 
 export const authRoutes: RouteModule = (app, deps) => {
   app.openapi(
@@ -27,6 +32,49 @@ export const authRoutes: RouteModule = (app, deps) => {
       responses: { 200: json(SignInResult), ...errors(400, 401, 422) },
     }),
     async (c) => c.json(await signInWithApple(deps, c.req.valid('json')), 200),
+  );
+
+  app.openapi(
+    createRoute({
+      method: 'post',
+      path: '/v1/auth/email/signup',
+      tags: ['Auth'],
+      summary: 'Create an email + password account and sign in',
+      description: 'The email is checked for format only and is not verified. Email accounts are separate from Apple accounts.',
+      request: {
+        body: body(
+          z.object({
+            email: Email,
+            password: Password,
+            display_name: z.string().max(100).nullish(),
+            timezone: z.string().optional().openapi({ example: 'Asia/Shanghai' }),
+            device_label: z.string().max(100).nullish(),
+          }),
+        ),
+      },
+      responses: { 201: json(SessionSchema), ...errors(400, 409, 422) },
+    }),
+    async (c) => c.json(await signUpWithEmail(deps, c.req.valid('json')), 201),
+  );
+
+  app.openapi(
+    createRoute({
+      method: 'post',
+      path: '/v1/auth/email/signin',
+      tags: ['Auth'],
+      summary: 'Sign in with email and password',
+      request: {
+        body: body(
+          z.object({
+            email: Email,
+            password: z.string().min(1).max(128),
+            device_label: z.string().max(100).nullish(),
+          }),
+        ),
+      },
+      responses: { 200: json(SessionSchema), ...errors(400, 401) },
+    }),
+    async (c) => c.json(await signInWithEmail(deps, c.req.valid('json')), 200),
   );
 
   app.openapi(

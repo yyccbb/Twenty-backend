@@ -5,7 +5,7 @@ import {
   goals,
   idempotencyKeys,
   refreshTokens,
-  reminders,
+  cues,
   userBadges,
   userSettings,
   users,
@@ -52,6 +52,7 @@ export async function getMe(db: Db, userId: string) {
   return {
     id: user.id,
     display_name: user.displayName,
+    email: user.email,
     timezone: user.timezone,
     timezone_supported: isSupportedTimezone(user.timezone),
     token_balance: user.tokenBalance,
@@ -101,13 +102,13 @@ export async function updateSettings(deps: Deps, userId: string, patch: Settings
 
 /**
  * App Store account deletion. Personal data is deleted; the user row is kept, stripped of identifying
- * fields, because the append-only token ledger references it.
+ * fields, because the append-only token ledger references it. The Apple ID or email can then sign up again.
  */
 export async function deleteAccount(deps: Deps, userId: string): Promise<void> {
   await transaction(deps.database, async (tx) => {
     await lockUser(tx, userId);
     await tx.db.delete(events).where(eq(events.userId, userId));
-    await tx.db.delete(reminders).where(eq(reminders.userId, userId));
+    await tx.db.delete(cues).where(eq(cues.userId, userId));
     await tx.db.delete(goals).where(eq(goals.userId, userId));
     await tx.db.delete(userBadges).where(eq(userBadges.userId, userId));
     await tx.db.delete(userSettings).where(eq(userSettings.userId, userId));
@@ -115,7 +116,7 @@ export async function deleteAccount(deps: Deps, userId: string): Promise<void> {
     await tx.db.delete(idempotencyKeys).where(inArray(idempotencyKeys.userId, [userId]));
     await tx.db
       .update(users)
-      .set({ appleSub: null, displayName: null, deletedAt: deps.clock.now() })
+      .set({ appleSub: null, email: null, passwordHash: null, displayName: null, deletedAt: deps.clock.now() })
       .where(eq(users.id, userId));
   });
 }

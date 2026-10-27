@@ -14,9 +14,9 @@ export class FakeAiProvider implements AiProvider {
       JSON.stringify({
         summary: 'A starter plan in 20-minute blocks.',
         items: [
-          { title: 'Research the basics', description: 'Read an introductory guide.', duration_slots: 3, sessions_per_week: 2 },
-          { title: 'Practice session', description: null, duration_slots: 2, sessions_per_week: 4 },
-          { title: 'Weekly review', description: 'Look back at progress.', duration_slots: 1, sessions_per_week: 1 },
+          { title: 'Research the basics', description: 'Read an introductory guide.', duration_bars: 3, sessions_per_week: 2 },
+          { title: 'Practice session', description: null, duration_bars: 2, sessions_per_week: 4 },
+          { title: 'Weekly review', description: 'Look back at progress.', duration_bars: 1, sessions_per_week: 1 },
         ],
       });
     return { content, model: 'fake-model', tokensUsed: 0 };

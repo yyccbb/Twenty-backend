@@ -47,7 +47,7 @@ const runners: Record<string, (input: any) => unknown> = {
       {
         calendar: toCalendar(i.calendar),
         eventId: i.event_id,
-        slots: i.slots,
+        bars: i.bars,
         now: new Date(i.now),
         timezone: i.timezone,
         dayEndLocalTime: i.day_end_local_time,
@@ -55,7 +55,10 @@ const runners: Record<string, (input: any) => unknown> = {
       gridRules,
     ),
   create: (i) =>
-    validateEventBlock({ calendar: toCalendar(i.calendar), start: new Date(i.start), end: new Date(i.end) }, gridRules),
+    validateEventBlock(
+      { calendar: toCalendar(i.calendar), kind: i.kind, start: new Date(i.start), end: new Date(i.end), eventId: i.event_id },
+      gridRules,
+    ),
   timezone: (i) => ({ supported: isSupportedTimezone(i.timezone) }),
 };
 
