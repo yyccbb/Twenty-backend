@@ -11,6 +11,8 @@ COPY package.json package-lock.json ./
 RUN npm ci --registry=${NPM_REGISTRY}
 COPY tsconfig.json tsconfig.build.json ./
 COPY src ./src
+# Grid and reward constants are imported from the vendor/Twenty submodule (check it out before building).
+COPY vendor/Twenty/contracts/rules/fixtures.json ./vendor/Twenty/contracts/rules/fixtures.json
 RUN npm run build && npm prune --omit=dev
 
 FROM ${NODE_IMAGE}
@@ -22,6 +24,7 @@ COPY --from=build /app/package.json ./
 COPY --from=build /app/node_modules ./node_modules
 COPY --from=build /app/dist ./dist
 COPY src/db/migrations ./dist/db/migrations
+COPY --from=build /app/vendor/Twenty/contracts/rules/fixtures.json ./vendor/Twenty/contracts/rules/fixtures.json
 USER node
 EXPOSE 3000
 ENTRYPOINT ["/sbin/tini", "--"]

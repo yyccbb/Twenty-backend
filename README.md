@@ -1,13 +1,14 @@
 # Twenty backend
 
 API and background worker for Twenty. The design spec is
-`../Twenty/docs/architecture/backend-tech-stack.md`; `AGENTS.md` summarises it.
+`vendor/Twenty/docs/architecture/backend-tech-stack.md` (the `Twenty` repo, a git submodule); `AGENTS.md` summarises it.
 
 TypeScript on Node 22 · Hono + `@hono/zod-openapi` · PostgreSQL 17 + Drizzle · pg-boss · Sign in with Apple + own JWTs · Qwen (Model Studio) behind `AiProvider`.
 
 ## Run it
 
 ```sh
+git submodule update --init       # vendor/Twenty: spec + rules fixtures/constants (or clone with --recurse-submodules)
 npm ci
 cp .env.example .env              # set JWT_SECRET, APPLE_CLIENT_IDS, QWEN_API_KEY (or AI_PROVIDER=fake)
 docker run -d --name twenty-pg -p 5432:5432 -e POSTGRES_USER=twenty -e POSTGRES_PASSWORD=twenty postgres:17-alpine
@@ -26,7 +27,7 @@ Production is `docker compose up -d` (Caddy + api + worker + postgres, plus a on
 | Command | What |
 |---|---|
 | `npm test` | Everything. Integration tests start a real Postgres with Testcontainers, so Docker must be running. |
-| `npm run test:rules` | Rules engine against `../Twenty/contracts/rules/fixtures.json` (override with `RULES_FIXTURES_PATH`). |
+| `npm run test:rules` | Rules engine against `vendor/Twenty/contracts/rules/fixtures.json` (override with `RULES_FIXTURES_PATH`). |
 | `npm run typecheck` / `npm run build` | `tsc`; the build emits `dist/server.js`, `dist/worker.js`, `dist/migrate.js`. |
 | `npm run openapi` | Regenerates `contracts/openapi.yaml`. A test fails if it drifts from the routes. |
 | `npm run db:generate` | Generates a SQL migration from `src/db/schema.ts`. Commit it with the schema change. |

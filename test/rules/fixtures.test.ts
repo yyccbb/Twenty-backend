@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
+  DEFAULT_GRID_RULES,
+  DEFAULT_REWARD_RULE,
   computeTokens,
   isSupportedTimezone,
   planExtension,
@@ -58,6 +60,11 @@ const runners: Record<string, (input: any) => unknown> = {
 };
 
 describe('rules fixtures', () => {
+  it('server defaults are the fixture constants', () => {
+    expect(DEFAULT_GRID_RULES).toStrictEqual(gridRules);
+    expect(DEFAULT_REWARD_RULE).toStrictEqual(rewardRule);
+  });
+
   it('covers every fixture group', () => {
     expect(Object.keys(fixtures.groups).sort()).toEqual(Object.keys(runners).sort());
   });

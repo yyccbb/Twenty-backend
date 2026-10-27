@@ -12,13 +12,13 @@ Twenty is an iOS-first productivity app (web app later). It combines five things
 4. **AI goal breakdown.** A long-term goal is turned into suggested activities sized in slots, which the user can place on the calendar.
 5. A **token and badge economy.** Completed events earn tokens, and tokens can be spent on badges.
 
-This repo is the **backend**. Product and design sources live in the sibling folder `../Twenty/`:
+This repo is the **backend**. Product and design sources live in the `Twenty` repo, checked out as the git submodule `vendor/Twenty/` (`git submodule update --init`):
 
 | Path | What it is |
 |---|---|
-| `../Twenty/docs/architecture/backend-tech-stack.md` | **The backend design. Treat it as the spec.** All decisions (Q1–Q15) are closed. |
-| `../Twenty/contracts/rules/fixtures.json` | Shared test cases for the rules engine (TS and Swift). Do not edit them to make tests pass. |
-| `../Twenty/docs/ideation/market-research.md` | Competitor research and product positioning (background only). |
+| `vendor/Twenty/docs/architecture/backend-tech-stack.md` | **The backend design. Treat it as the spec.** All decisions (Q1–Q15) are closed. |
+| `vendor/Twenty/contracts/rules/fixtures.json` | Shared test cases and constants for the rules engine (TS and Swift). Do not edit them to make tests pass. Change them in the `Twenty` repo, then bump the submodule. |
+| `vendor/Twenty/docs/ideation/market-research.md` | Competitor research and product positioning (background only). |
 
 If code and the spec disagree, follow the spec and flag the mismatch. If the spec is silent or ambiguous, ask instead of inventing behaviour, especially for timing and token rules.
 
@@ -74,7 +74,7 @@ The API and the worker are built from the same image, with separate entry points
 
 ## Rules for writing the code
 
-- **`src/rules/` must stay pure.** It takes inputs and returns outputs: no `Date.now()`, DB or env access. It must pass every case in `../Twenty/contracts/rules/fixtures.json` (groups: `snap`, `start`, `finish`, `tokens`, `extend`, `create`, `timezone`). Expected objects must match exactly, with no extra keys. Compare times as instants, not strings. Constants come from the fixture's `constants`, and they are placeholders until the game design is final.
+- **`src/rules/` must stay pure.** It takes inputs and returns outputs: no `Date.now()`, DB or env access. It must pass every case in `vendor/Twenty/contracts/rules/fixtures.json` (groups: `snap`, `start`, `finish`, `tokens`, `extend`, `create`, `timezone`). Expected objects must match exactly, with no extra keys. Compare times as instants, not strings. Constants are imported from the fixture's `constants` (`src/rules/constants.ts`), never hard-coded; they are placeholders until the game design is final. `migrate` adds a new `reward_rules` version whenever the fixture's reward constants change.
 - **The token ledger is append-only.** No UPDATE or DELETE; corrections are new entries. `users.token_balance` is a cached sum, updated **in the same transaction** as the ledger insert. `idempotency_key` is UNIQUE.
 - Every write that changes state accepts an **`Idempotency-Key`** header. Retries must never pay out twice.
 - Events use a `version` column for **optimistic locking**.

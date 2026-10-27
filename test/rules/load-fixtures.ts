@@ -1,21 +1,17 @@
 import { existsSync, readFileSync } from 'node:fs';
-import { dirname, join, resolve } from 'node:path';
+import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { GridRules, RewardRule } from '../../src/rules/index.js';
 
-// The shared fixtures live in the sibling product repo (../Twenty). Set RULES_FIXTURES_PATH to override.
+// The shared fixtures come from the vendor/Twenty submodule (`git submodule update --init`).
+// Set RULES_FIXTURES_PATH to test against another copy.
 function findFixtures(): string {
   if (process.env.RULES_FIXTURES_PATH) return resolve(process.env.RULES_FIXTURES_PATH);
-  let dir = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
-  for (;;) {
-    const candidate = join(dir, '..', 'Twenty', 'contracts', 'rules', 'fixtures.json');
-    if (existsSync(candidate)) return candidate;
-    const parent = dirname(dir);
-    if (parent === dir) {
-      throw new Error('contracts/rules/fixtures.json not found; set RULES_FIXTURES_PATH');
-    }
-    dir = parent;
+  const path = resolve(dirname(fileURLToPath(import.meta.url)), '../../vendor/Twenty/contracts/rules/fixtures.json');
+  if (!existsSync(path)) {
+    throw new Error('vendor/Twenty/contracts/rules/fixtures.json not found; run `git submodule update --init`');
   }
+  return path;
 }
 
 export interface FixtureCase {

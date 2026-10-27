@@ -3,7 +3,10 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { transaction } from '../../src/db/client.js';
 import { uuidv7 } from '../../src/db/ids.js';
 import { badges, tokenLedger, users } from '../../src/db/schema.js';
+import { syncRewardRule } from '../../src/migrate.js';
+import { DEFAULT_REWARD_RULE } from '../../src/rules/index.js';
 import { appendLedgerEntry } from '../../src/services/ledger.js';
+import { getActiveRewardRule, getRewardRule } from '../../src/services/rewardRules.js';
 import { type Harness, sh, startHarness } from './harness.js';
 
 let h: Harness;
@@ -90,5 +93,21 @@ describe('badges', () => {
     const list = await h.request('GET', '/v1/badges', { token });
     expect(list.body.badges.find((b: any) => b.id === badge!.id)).toMatchObject({ owned: true });
     expect(await balanceOf(userId)).toBe(5);
+  });
+});
+
+// Last in the file: it adds reward_rules versions to the shared database.
+describe('reward rule sync', () => {
+  it('seeds the fixture constants and adds a version only when they change', async () => {
+    expect(await getActiveRewardRule(h.database.db)).toStrictEqual({ version: 1, ...DEFAULT_REWARD_RULE });
+
+    await syncRewardRule(h.database.pool);
+    expect((await getActiveRewardRule(h.database.db)).version).toBe(1);
+
+    const changed = { ...DEFAULT_REWARD_RULE, tokensPerSlot: DEFAULT_REWARD_RULE.tokensPerSlot + 2 };
+    await syncRewardRule(h.database.pool, changed);
+    await syncRewardRule(h.database.pool, changed);
+    expect(await getActiveRewardRule(h.database.db)).toStrictEqual({ version: 2, ...changed });
+    expect(await getRewardRule(h.database.db, 1)).toStrictEqual({ version: 1, ...DEFAULT_REWARD_RULE });
   });
 });
