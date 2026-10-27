@@ -85,8 +85,15 @@ describe('start and finish', () => {
     const { token } = await h.signIn();
     const a = await createEvent(token, sh('14:00'), 3);
     await tap(token, a.id, 'start', sh('14:00'));
-    const short = await tap(token, a.id, 'finish', sh('14:30'));
+    // Finishing 10 minutes early loses the last bar: on time is only (E − 5, E + 5].
+    const short = await tap(token, a.id, 'finish', sh('14:50'));
     expect(short.body).toMatchObject({ finish_kind: 'shortened', tokens_awarded: 20 });
+    expect(short.body.recorded_end).toBe(new Date(sh('14:40')).toISOString());
+
+    // Away from the end, finish taps snap like start taps: 18:30 snaps to 18:40.
+    const c = await createEvent(token, sh('18:00'), 3);
+    await tap(token, c.id, 'start', sh('18:00'));
+    expect((await tap(token, c.id, 'finish', sh('18:30'))).body).toMatchObject({ finish_kind: 'shortened', tokens_awarded: 20 });
 
     const b = await createEvent(token, sh('16:00'), 3);
     await tap(token, b.id, 'start', sh('16:00'));

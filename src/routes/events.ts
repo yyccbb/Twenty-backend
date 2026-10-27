@@ -154,7 +154,7 @@ export const eventRoutes: RouteModule = (app, deps) => {
       tags: ['Recording'],
       summary: 'Record a Cadenza finish tap and award tokens',
       description:
-        'Cadenzas only (a Tutti gets 409 not_cadenza). A tap in (E−15, E+5] is on time; earlier taps shorten the Cadenza; a tap after E+5 counts as auto-finish (one bar deducted); a finish that snaps to the recorded start is abandoned.',
+        'Cadenzas only (a Tutti gets 409 not_cadenza). Finish taps snap like start taps, except that on time is only (E−5, E+5]: a tap in (E−15, E−5] records E−20. Earlier taps shorten the Cadenza; a tap after E+5 counts as auto-finish (one bar deducted); a finish that snaps to the recorded start is abandoned.',
       security,
       request: { params: IdParam, headers: IdempotencyHeaders, body: body(TapBody) },
       responses: { 200: json(FinishResultSchema), ...errors(400, 401, 404, 409, 422) },
