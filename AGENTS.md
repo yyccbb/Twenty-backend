@@ -16,11 +16,12 @@ This repo is the **backend**. Product and design sources live in the `Twenty` re
 
 | Path | What it is |
 |---|---|
-| `vendor/Twenty/docs/architecture/backend-tech-stack.md` | **The backend design. Treat it as the spec.** All decisions (Q1–Q18) are closed. |
+| `vendor/Twenty/docs/developer-guide/rules.md` | **The product rules: grid, start/finish, extend, overlap, tokens, cues.** Its decisions (Q1–Q20) are closed. |
+| `vendor/Twenty/docs/developer-guide/backend.md` | The backend developer guide: stack, data model, endpoint list, workflows, invariants, config and deployment. |
 | `vendor/Twenty/contracts/rules/fixtures.json` | Shared test cases and constants for the rules engine (TS and Swift). Do not edit them to make tests pass. Change them in the `Twenty` repo, then bump the submodule. |
 | `vendor/Twenty/docs/ideation/market-research.md` | Competitor research and product positioning (background only). |
 
-If code and the spec disagree, follow the spec and flag the mismatch. If the spec is silent or ambiguous, ask instead of inventing behaviour, especially for timing and token rules.
+If code and `rules.md` disagree, follow `rules.md` and flag the mismatch. If the rules are silent or ambiguous, ask instead of inventing behaviour, especially for timing and token rules.
 
 The repo is empty right now. Build it to match the layout and stack below.
 
@@ -61,7 +62,7 @@ package.json
 
 The API and the worker are built from the same image, with separate entry points (`dist/server.js` and `dist/worker.js`). The generated `openapi.yaml` is committed under `contracts/`. The iOS client (`swift-openapi-generator`) and the web client (`openapi-typescript`) are generated from it, so regenerate and commit it whenever a route changes.
 
-## Core rules (summary; the full version is in spec §3)
+## Core rules (summary; the full version is in `vendor/Twenty/docs/developer-guide/rules.md`)
 
 - **Kinds:** every event has `kind` `cadenza` or `tutti`. Both sit on the grid and last whole bars. Only Cadenzas are started, extended, finished, rewarded, pushed by cascades or checked for overlap; start/extend/finish on a Tutti returns `409 not_cadenza`. Tuttis are only ever `planned` or `cancelled`. A planned event can switch kind with `PATCH` (switching to Cadenza runs the overlap check; a started, done or missed Cadenza can't switch: `409 invalid_state`).
 - **Grid:** 1 bar = 20 minutes. Grid marks are :00, :20 and :40. All times are stored as UTC `timestamptz`, along with the user's IANA time zone. Only **whole-hour UTC offsets** are supported, so all grid math runs in UTC. Half-hour and 45-minute zones (India, Nepal and others) must be reported as unsupported.
@@ -80,7 +81,7 @@ The API and the worker are built from the same image, with separate entry points
 - Every write that changes state accepts an **`Idempotency-Key`** header. Retries must never pay out twice.
 - Events use a `version` column for **optimistic locking**.
 - The server stores raw device tap times and computes the recorded times itself. Offline taps are accepted if the device time is within 24 hours and the clock looks sane.
-- **API shape:** REST + JSON under `/v1`. Errors use one format, `{ "error": { "code": "snake_case_code", "message": "..." } }`. List endpoints use cursor pagination and ETags. `GET /healthz` is the liveness check. The full endpoint list (about 30 endpoints) is in spec §5.1. `DELETE /v1/me` is required by App Store rules.
+- **API shape:** REST + JSON under `/v1`. Errors use one format, `{ "error": { "code": "snake_case_code", "message": "..." } }`. List endpoints use cursor pagination and ETags. `GET /healthz` is the liveness check. The full endpoint list is in `vendor/Twenty/docs/developer-guide/backend.md` §7. `DELETE /v1/me` is required by App Store rules.
 - **Scaling habits to build in now:** a stateless API (no in-memory sessions or local files), 12-factor config from env vars, **UUIDv7** primary keys, indexes on `events(user_id, planned_start)` and `token_ledger(user_id, created_at)`, and a request ID in every log line.
 - **AI:** validate model output with Zod. Durations must be whole 20-minute bars; repair or reject anything else. Accepted items become Cadenzas unless the client sends `kind: tutti`. Breakdowns run as the background job `ai.breakdown` (the API returns `202`, then the client polls). Enforce a per-user daily limit on breakdown requests. Never expose API keys to clients.
 - **Jobs:** `ai.breakdown`, `events.auto_finish` (delayed until `E+5`), `events.close_stale` (every 20 minutes; marks unstarted, past Cadenzas as `missed`; Tuttis are left alone), `db.backup` (nightly `pg_dump` to OSS).
@@ -89,4 +90,4 @@ The API and the worker are built from the same image, with separate entry points
 
 - Write and run tests for any change to rules, ledger or recording logic. Report failing tests honestly.
 - Keep generated artifacts (`openapi.yaml`, Drizzle migrations) in sync with the code that produces them, and commit them together.
-- Don't add infrastructure the spec rules out for the MVP (Redis, Kafka, Kubernetes, microservices) without asking.
+- Don't add infrastructure the MVP doesn't need (Redis, Kafka, Kubernetes, microservices) without asking.

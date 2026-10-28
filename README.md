@@ -1,19 +1,20 @@
 # Twenty backend
 
-API and background worker for Twenty. The design spec is
-`vendor/Twenty/docs/architecture/backend-tech-stack.md` (the `Twenty` repo, a git submodule); `AGENTS.md` summarises it.
+API and background worker for Twenty. The design lives in the developer guide of the `Twenty` repo (a git submodule):
+the product rules in `vendor/Twenty/docs/developer-guide/rules.md`, and the stack, data model and API in
+`vendor/Twenty/docs/developer-guide/backend.md`. `AGENTS.md` summarises them.
 
 TypeScript on Node 22 · Hono + `@hono/zod-openapi` · PostgreSQL 17 + Drizzle · pg-boss · Sign in with Apple or email + password, with own JWTs · Qwen (Model Studio) behind `AiProvider`.
 
 ## Run it
 
 ```sh
-git submodule update --init       # vendor/Twenty: spec + rules fixtures/constants (or clone with --recurse-submodules)
+git submodule update --init       # vendor/Twenty: developer guide + rules fixtures/constants (or clone with --recurse-submodules)
 npm ci
 cp .env.example .env              # set JWT_SECRET, APPLE_CLIENT_IDS, QWEN_API_KEY (or AI_PROVIDER=fake)
 docker run -d --name twenty-pg -p 5432:5432 -e POSTGRES_USER=twenty -e POSTGRES_PASSWORD=twenty postgres:17-alpine
 npm run migrate:dev
-npm run dev                       # API on :3000, spec at /openapi.json
+npm run dev                       # API on :3000, OpenAPI at /openapi.json
 npm run dev:worker                # jobs + cron
 ```
 
@@ -57,7 +58,7 @@ src/db/        Drizzle schema, migrations (plain SQL), UUIDv7
   `Idempotent-Replayed: true`; reusing a key for a different request returns `422 idempotency_key_reused`.
 - Calendar and ledger writes take a per-user row lock, so concurrent requests for one user are serialised.
 
-### Decisions the spec left open
+### Decisions the rules left open
 
 These are my calls; change them if they're wrong:
 
@@ -76,10 +77,10 @@ These are my calls; change them if they're wrong:
    `DELETE /v1/cues/{id}` takes `scope` and `occurrence` as query parameters. Splitting a `COUNT` rule
    carries the remaining count into the new part. Scoped edits apply to the cue row you name, not to
    every row in the series.
-7. **Caps the spec doesn't set:** an event is at most 72 bars (24 h), one extension at most 72 bars, `GET
+7. **Caps the rules don't set:** an event is at most 72 bars (24 h), one extension at most 72 bars, `GET
    /v1/events` spans at most 92 days and `GET /v1/calendar` at most 62.
 8. **Abandoned Cadenzas** occupy no time for overlap checks.
 9. The **daily AI limit** counts breakdowns since local midnight in the user's time zone.
 10. Concurrent refreshes with the same refresh token count as reuse and revoke every session (there's no grace window).
-11. **Default kind:** `POST /v1/events` without `kind` creates a Cadenza, matching the spec's default for accepted
+11. **Default kind:** `POST /v1/events` without `kind` creates a Cadenza, matching the default for accepted
     breakdown items.
