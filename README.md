@@ -4,14 +4,14 @@ API and background worker for Twenty. The design lives in the developer guide of
 the product rules in `vendor/Twenty/docs/developer-guide/rules.md`, and the stack, data model and API in
 `vendor/Twenty/docs/developer-guide/backend.md`. `AGENTS.md` summarises them.
 
-TypeScript on Node 22 · Hono + `@hono/zod-openapi` · PostgreSQL 17 + Drizzle · pg-boss · Sign in with Apple or email + password, with own JWTs · Qwen (Model Studio) behind `AiProvider`.
+TypeScript on Node 22 · Hono + `@hono/zod-openapi` · PostgreSQL 17 + Drizzle · pg-boss · Sign in with Apple or email + password, with own JWTs · DeepSeek Flash via SiliconFlow behind `AiProvider`.
 
 ## Run it
 
 ```sh
 git submodule update --init       # vendor/Twenty: developer guide + rules fixtures/constants (or clone with --recurse-submodules)
 npm ci
-cp .env.example .env              # set JWT_SECRET, APPLE_CLIENT_IDS, QWEN_API_KEY (or AI_PROVIDER=fake)
+cp .env.example .env              # set JWT_SECRET (≥ 32 chars) and APPLE_CLIENT_IDS; AI_PROVIDER=fake runs without an AI key
 docker run -d --name twenty-pg -p 5432:5432 -e POSTGRES_USER=twenty -e POSTGRES_PASSWORD=twenty postgres:17-alpine
 npm run migrate:dev
 npm run dev                       # API on :3000, OpenAPI at /openapi.json
@@ -40,9 +40,10 @@ src/rules/     pure 20-min grid, snap, start, finish, extend/cascade, Cadenza ov
 src/services/  events, recording, ledger, cues (+ RRULE expansion), goals, breakdowns, badges, users
 src/routes/    Hono routes + Zod schemas (the OpenAPI source)
 src/auth/      Apple ID token verification, email/password hashing, JWT access tokens, rotating refresh tokens
-src/ai/        AiProvider interface, qwen.ts, fake.ts, breakdown prompt + output validation
+src/ai/        AiProvider interface, SiliconFlow and fake providers, breakdown prompt + output validation
 src/jobs/      pg-boss queue names, options and handlers
 src/db/        Drizzle schema, migrations (plain SQL), UUIDv7
+src/lib/       errors, logger, clock, pagination
 ```
 
 ## Behaviour worth knowing
@@ -57,30 +58,3 @@ src/db/        Drizzle schema, migrations (plain SQL), UUIDv7
 - **Writes accept `Idempotency-Key`.** The first response (below 500) is stored for 24 h and replayed with
   `Idempotent-Replayed: true`; reusing a key for a different request returns `422 idempotency_key_reused`.
 - Calendar and ledger writes take a per-user row lock, so concurrent requests for one user are serialised.
-
-### Decisions the rules left open
-
-These are my calls; change them if they're wrong:
-
-1. **Late offline taps.** A queued start tap that arrives after `events.close_stale` marked the event `missed` is
-   still accepted. A queued finish tap from before `E+5` that arrives after the auto-finish job replaces the
-   auto-finish, and the difference is posted as an `adjustment` ledger entry.
-2. **`events.close_stale` also auto-finishes** in-progress events more than 6 minutes past `E`, in case their
-   auto-finish job was lost.
-3. **Account deletion** deletes all personal data but keeps a stripped `users` row (no Apple ID, email, password or name), because
-   the append-only ledger references it. Signing in again with the same Apple ID or email creates a new account.
-4. **Unsupported time zones** (non-whole-hour) are rejected with `422 unsupported_timezone` at sign-in and in
-   settings. `GET /v1/me` reports `timezone_supported`.
-5. **Day end** for a pushed event is the first `day_end_local_time` strictly after the event's start (pre-push).
-6. **Cues:** a deleted single occurrence is stored as occurrence status `cancelled` (an addition to
-   done/skipped/snoozed/moved). Editing one occurrence's content creates a standalone copy in the same series.
-   `DELETE /v1/cues/{id}` takes `scope` and `occurrence` as query parameters. Splitting a `COUNT` rule
-   carries the remaining count into the new part. Scoped edits apply to the cue row you name, not to
-   every row in the series.
-7. **Caps the rules don't set:** an event is at most 72 bars (24 h), one extension at most 72 bars, `GET
-   /v1/events` spans at most 92 days and `GET /v1/calendar` at most 62.
-8. **Abandoned Cadenzas** occupy no time for overlap checks.
-9. The **daily AI limit** counts breakdowns since local midnight in the user's time zone.
-10. Concurrent refreshes with the same refresh token count as reuse and revoke every session (there's no grace window).
-11. **Default kind:** `POST /v1/events` without `kind` creates a Cadenza, matching the default for accepted
-    breakdown items.
