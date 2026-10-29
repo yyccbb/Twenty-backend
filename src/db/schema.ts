@@ -21,13 +21,14 @@ const ts = (name: string) => timestamp(name, { withTimezone: true, mode: 'date' 
 const createdAt = () => ts('created_at').notNull().defaultNow();
 const updatedAt = () => ts('updated_at').notNull().defaultNow();
 
-export const eventStatus = pgEnum('event_status', ['planned', 'in_progress', 'done', 'missed', 'cancelled']);
+// There is no cancelled state: deleting a planned event removes it (rules.md, Event states).
+export const eventStatus = pgEnum('event_status', ['planned', 'in_progress', 'done', 'missed']);
 export const eventKind = pgEnum('event_kind', ['cadenza', 'tutti']);
 export const finishKind = pgEnum('finish_kind', ['on_time', 'shortened', 'auto', 'abandoned']);
 export const eventChangeKind = pgEnum('event_change_kind', ['extend', 'cascade_shift', 'early_start']);
 export const goalStatus = pgEnum('goal_status', ['active', 'achieved', 'archived']);
 export const breakdownStatus = pgEnum('breakdown_status', ['queued', 'running', 'done', 'failed']);
-// `cancelled` (one occurrence deleted) is an addition to the spec's done|skipped|snoozed|moved.
+// `cancelled` means that one occurrence was deleted (backend.md §6).
 export const occurrenceStatus = pgEnum('occurrence_status', ['done', 'skipped', 'snoozed', 'moved', 'cancelled']);
 export const ledgerReason = pgEnum('ledger_reason', ['event_reward', 'badge_redeem', 'adjustment']);
 
@@ -146,8 +147,8 @@ export const events = pgTable(
     index('events_user_planned_start_idx').on(t.userId, t.plannedStart),
     index('events_status_idx').on(t.status, t.plannedStart),
     check('events_duration_positive', sql`${t.durationBars} >= 1`),
-    // Tuttis are never started, so they are only ever planned or cancelled (spec §4).
-    check('events_tutti_status', sql`${t.kind} = 'cadenza' OR ${t.status} IN ('planned', 'cancelled')`),
+    // Tuttis are never started, so they are only ever planned.
+    check('events_tutti_status', sql`${t.kind} = 'cadenza' OR ${t.status} = 'planned'`),
     check('events_start_on_grid', sql`(extract(epoch from ${t.plannedStart})::bigint % 1200) = 0`),
   ],
 );
@@ -242,7 +243,7 @@ export const rewardRules = pgTable(
   (t) => [check('reward_rules_even_value', sql`${t.tokensPerBar} > 0 AND ${t.tokensPerBar} % 2 = 0`)],
 );
 
-// Append-only: a trigger (see migrations) rejects UPDATE, DELETE and TRUNCATE.
+// Append-only: a trigger (0001_ledger_append_only_and_seed.sql) rejects UPDATE, DELETE and TRUNCATE.
 export const tokenLedger = pgTable(
   'token_ledger',
   {

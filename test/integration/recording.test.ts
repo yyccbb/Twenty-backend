@@ -1,11 +1,12 @@
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { handleAutoFinish, handleCloseStale } from '../../src/jobs/handlers.js';
-import { type Harness, sh, startHarness } from './harness.js';
+import { CLOCK_START, type Harness, sh, startHarness } from './harness.js';
 
 let h: Harness;
 beforeAll(async () => {
   h = await startHarness();
 });
+beforeEach(() => h.clock.set(CLOCK_START));
 afterAll(async () => h?.stop());
 
 async function createEvent(token: string, start: string, bars: number, title = 'Block', kind: 'cadenza' | 'tutti' = 'cadenza') {
@@ -84,21 +85,75 @@ describe('start and finish', () => {
   it('shortened and abandoned finishes', async () => {
     const { token } = await h.signIn();
     const a = await createEvent(token, sh('14:00'), 3);
+    const b = await createEvent(token, sh('16:00'), 3);
+    const c = await createEvent(token, sh('18:00'), 3);
     await tap(token, a.id, 'start', sh('14:00'));
     // Finishing 10 minutes early loses the last bar: on time is only (E − 5, E + 5].
     const short = await tap(token, a.id, 'finish', sh('14:50'));
     expect(short.body).toMatchObject({ finish_kind: 'shortened', tokens_awarded: 20 });
     expect(short.body.recorded_end).toBe(new Date(sh('14:40')).toISOString());
 
-    // Away from the end, finish taps snap like start taps: 18:30 snaps to 18:40.
-    const c = await createEvent(token, sh('18:00'), 3);
-    await tap(token, c.id, 'start', sh('18:00'));
-    expect((await tap(token, c.id, 'finish', sh('18:30'))).body).toMatchObject({ finish_kind: 'shortened', tokens_awarded: 20 });
-
-    const b = await createEvent(token, sh('16:00'), 3);
     await tap(token, b.id, 'start', sh('16:00'));
     const abandoned = await tap(token, b.id, 'finish', sh('16:04'));
     expect(abandoned.body).toMatchObject({ finish_kind: 'abandoned', recorded_end: null, tokens_awarded: 0 });
+
+    // Away from the end, finish taps snap like start taps: 18:30 snaps to 18:40.
+    await tap(token, c.id, 'start', sh('18:00'));
+    expect((await tap(token, c.id, 'finish', sh('18:30'))).body).toMatchObject({ finish_kind: 'shortened', tokens_awarded: 20 });
+  });
+
+  it('starts only one Cadenza at a time', async () => {
+    const { token } = await h.signIn();
+    const a = await createEvent(token, sh('14:00'), 3, 'A');
+    const b = await createEvent(token, sh('15:00'), 3, 'B');
+    await tap(token, a.id, 'start', sh('14:00'));
+
+    const blocked = await tap(token, b.id, 'start', sh('14:58'));
+    expect(blocked.status).toBe(409);
+    expect(blocked.body.error).toMatchObject({ code: 'cadenza_in_progress', conflicts: [a.id] });
+
+    // "Finish A and start B": the same tap time for both, A's finish first.
+    expect((await tap(token, a.id, 'finish', sh('14:58'))).body.finish_kind).toBe('on_time');
+    expect((await tap(token, b.id, 'start', sh('14:58'))).body).toMatchObject({ outcome: 'on_time', late_bars: 0 });
+  });
+
+  it('a Cadenza past E + 5 is auto-finished before its job runs, so it no longer blocks a start', async () => {
+    const { token } = await h.signIn();
+    const a = await createEvent(token, sh('14:00'), 3, 'A');
+    const b = await createEvent(token, sh('15:00'), 3, 'B');
+    await tap(token, a.id, 'start', sh('14:00'));
+    const job = h.queue.take('events.auto_finish').find((j) => j.data.event_id === a.id)!;
+
+    const start = await tap(token, b.id, 'start', sh('15:05:01'));
+    expect(start.body).toMatchObject({ outcome: 'late', late_bars: 1 });
+    expect((await h.request('GET', `/v1/events/${a.id}`, { token })).body).toMatchObject({
+      status: 'done',
+      record: { finish_kind: 'auto', tokens_awarded: 20 },
+    });
+    expect(await handleAutoFinish(h.deps, job.data)).toBe(false);
+
+    // A's queued offline finish from before E + 5 still replaces the auto-finish.
+    h.clock.set(sh('15:10'));
+    const late = await h.request('POST', `/v1/events/${a.id}/finish`, { token, body: { tapped_at: sh('15:04') } });
+    expect(late.body).toMatchObject({ finish_kind: 'on_time', tokens_awarded: 30, token_balance: 30 });
+  });
+
+  it('rejects a finish tap made after E + 5', async () => {
+    const { token } = await h.signIn();
+    const ev = await createEvent(token, sh('14:00'), 3);
+    await tap(token, ev.id, 'start', sh('14:00'));
+    const job = h.queue.take('events.auto_finish').find((j) => j.data.event_id === ev.id)!;
+
+    const late = await tap(token, ev.id, 'finish', sh('15:05:01'));
+    expect(late.status).toBe(409);
+    expect(late.body.error.code).toBe('window_closed');
+    expect(await handleAutoFinish(h.deps, job.data)).toBe(true);
+
+    // Once auto-finished, a tap after E + 5 still can't replace it.
+    h.clock.set(sh('15:30'));
+    const replay = await h.request('POST', `/v1/events/${ev.id}/finish`, { token, body: { tapped_at: sh('15:06') } });
+    expect(replay.body.error.code).toBe('window_closed');
+    expect(await balance(token)).toBe(20);
   });
 
   it('rejects taps from a clock that is far off', async () => {
@@ -275,16 +330,31 @@ describe('extend', () => {
     ]);
   });
 
-  it('rejects pushing an event that is already in progress', async () => {
+  it('extends only a Cadenza in progress, by 1 to 72 bars', async () => {
     const { token } = await h.signIn();
     const a = await createEvent(token, sh('14:00'), 3, 'A');
-    const c = await createEvent(token, sh('15:00'), 1, 'C');
+    const extend = (bars: number) => h.request('POST', `/v1/events/${a.id}/extend`, { token, body: { bars } });
+    expect((await extend(1)).body.error.code).toBe('invalid_state');
     await tap(token, a.id, 'start', sh('14:00'));
-    await tap(token, c.id, 'start', sh('15:00'));
-    h.clock.set(sh('15:01'));
+    expect((await extend(73)).body.error.code).toBe('invalid_bars');
+    expect((await extend(72)).status).toBe(200);
+  });
+
+  it('never pushes a Cadenza that already ran, even when a late offline start makes the cascade reach one', async () => {
+    const { token } = await h.signIn();
+    const a = await createEvent(token, sh('14:00'), 3, 'A');
+    const x = await createEvent(token, sh('15:00'), 2, 'X');
+    // X runs on one device while A's start, tapped at 14:00 on another, is still queued offline.
+    await tap(token, x.id, 'start', sh('15:00'));
+    h.clock.set(sh('15:03:30'));
+    const finish = await h.request('POST', `/v1/events/${x.id}/finish`, { token, body: { tapped_at: sh('15:05:30') } });
+    expect(finish.body.recorded_end).toBe(new Date(sh('15:20')).toISOString());
+    h.clock.set(sh('15:04'));
+    expect((await h.request('POST', `/v1/events/${a.id}/start`, { token, body: { tapped_at: sh('14:00') } })).status).toBe(200);
+
     const res = await h.request('POST', `/v1/events/${a.id}/extend`, { token, body: { bars: 1 } });
     expect(res.status).toBe(409);
-    expect(res.body.error).toMatchObject({ code: 'pushed_event_locked', conflicts: [c.id] });
+    expect(res.body.error).toMatchObject({ code: 'pushed_event_locked', conflicts: [x.id] });
   });
 
   it('warns about pushes past the day end and closes 5 minutes after the end', async () => {

@@ -1,4 +1,4 @@
-import { and, eq, inArray, isNull } from 'drizzle-orm';
+import { and, eq, isNull } from 'drizzle-orm';
 import { type Db, lockUser, transaction } from '../db/client.js';
 import {
   events,
@@ -113,7 +113,7 @@ export async function deleteAccount(deps: Deps, userId: string): Promise<void> {
     await tx.db.delete(userBadges).where(eq(userBadges.userId, userId));
     await tx.db.delete(userSettings).where(eq(userSettings.userId, userId));
     await tx.db.delete(refreshTokens).where(eq(refreshTokens.userId, userId));
-    await tx.db.delete(idempotencyKeys).where(inArray(idempotencyKeys.userId, [userId]));
+    await tx.db.delete(idempotencyKeys).where(eq(idempotencyKeys.userId, userId));
     await tx.db
       .update(users)
       .set({ appleSub: null, email: null, passwordHash: null, displayName: null, deletedAt: deps.clock.now() })

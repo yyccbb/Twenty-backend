@@ -1,12 +1,20 @@
-import { and, asc, eq, gt, notInArray, or, sql } from 'drizzle-orm';
+import { and, asc, eq, gt, lt, ne, or, sql } from 'drizzle-orm';
 import { type Db, type Tx, lockUser, transaction } from '../db/client.js';
 import { uuidv7 } from '../db/ids.js';
 import { eventRecords, events, goals } from '../db/schema.js';
 import type { Deps } from '../deps.js';
 import { AppError, cadenzaOverlap, invalidState, notFound, versionConflict } from '../lib/errors.js';
 import { decodeCursor, encodeCursor } from '../lib/pagination.js';
-import { iso, isoOrNull } from '../lib/time.js';
-import { type CalendarEvent, type CreateResult, type EventKind, addBars, validateEventBlock } from '../rules/index.js';
+import { addMinutes, iso, isoOrNull } from '../lib/time.js';
+import {
+  type CalendarEvent,
+  type CreateResult,
+  DEFAULT_GRID_RULES,
+  type EventKind,
+  MAX_BARS,
+  addBars,
+  validateEventBlock,
+} from '../rules/index.js';
 
 export type EventRow = typeof events.$inferSelect;
 export type RecordRow = typeof eventRecords.$inferSelect;
@@ -15,10 +23,15 @@ export interface EventWithRecord {
   record: RecordRow | null;
 }
 
-/** Upper bound on a planned block (24 h). The spec sets no limit; this only guards against absurd input. */
-export const MAX_DURATION_BARS = 72;
-
 export const plannedEnd = (e: Pick<EventRow, 'plannedStart' | 'durationBars'>) => addBars(e.plannedStart, e.durationBars);
+
+/** planned_end in SQL. */
+export const plannedEndSql = sql`(${events.plannedStart} + ${events.durationBars} * ${sql.raw(
+  `interval '${DEFAULT_GRID_RULES.barMinutes} minutes'`,
+)})`;
+
+/** An early start reaches at most this far before the plan (rules.md §3). */
+const EARLY_REACH_MINUTES = DEFAULT_GRID_RULES.maxEarlyBars * DEFAULT_GRID_RULES.barMinutes;
 
 /**
  * The block an event occupies for overlap checks and cascades: the plan while planned,
@@ -76,53 +89,47 @@ export function eventDto({ event, record }: EventWithRecord) {
   };
 }
 
-export type EventDto = ReturnType<typeof eventDto>;
+const selectEvents = (db: Db) =>
+  db.select({ event: events, record: eventRecords }).from(events).leftJoin(eventRecords, eq(eventRecords.eventId, events.id));
 
-/** Active events whose effective block may intersect [from, to). Early starts reach at most 1 h before the plan. */
-export async function loadCalendar(db: Db, userId: string, from: Date, to: Date): Promise<EventWithRecord[]> {
-  return db
-    .select({ event: events, record: eventRecords })
-    .from(events)
-    .leftJoin(eventRecords, eq(eventRecords.eventId, events.id))
-    .where(
-      and(
-        eq(events.userId, userId),
-        notInArray(events.status, ['cancelled', 'missed']),
-        sql`${events.plannedStart} - interval '1 hour' < ${to}`,
-        sql`${events.plannedStart} + ${events.durationBars} * interval '20 minutes' > ${from}`,
+/**
+ * The user's Cadenzas that the rules look at: any in progress, plus the planned and done ones whose effective
+ * block may intersect [from, to) (`to` omitted: no upper bound). Missed Cadenzas and Tuttis never count.
+ */
+export async function loadCadenzas(db: Db, userId: string, from: Date, to?: Date): Promise<EventWithRecord[]> {
+  return selectEvents(db).where(
+    and(
+      eq(events.userId, userId),
+      eq(events.kind, 'cadenza'),
+      ne(events.status, 'missed'),
+      or(
+        eq(events.status, 'in_progress'),
+        and(
+          to ? lt(events.plannedStart, addMinutes(to, EARLY_REACH_MINUTES)) : undefined,
+          sql`${plannedEndSql} > ${from}`,
+        ),
       ),
-    );
+    ),
+  );
 }
 
 export async function getOwnedEvent(db: Db, userId: string, eventId: string, forUpdate = false): Promise<EventWithRecord> {
-  const q = db
-    .select({ event: events, record: eventRecords })
-    .from(events)
-    .leftJoin(eventRecords, eq(eventRecords.eventId, events.id))
-    .where(and(eq(events.id, eventId), eq(events.userId, userId)));
+  const q = selectEvents(db).where(and(eq(events.id, eventId), eq(events.userId, userId)));
   const [row] = forUpdate ? await q.for('update', { of: events }) : await q;
   if (!row) throw notFound('Event');
   return row;
 }
 
-export function throwBlockError(result: Exclude<CreateResult, { ok: true }>): never {
+function throwBlockError(result: Exclude<CreateResult, { ok: true }>): never {
   switch (result.error) {
     case 'bar_misaligned':
       throw new AppError(422, 'bar_misaligned', 'planned_start must be on a :00, :20 or :40 mark');
     case 'invalid_duration':
-      throw new AppError(422, 'invalid_duration', 'duration_bars must be a whole number of 20-minute bars, at least 1');
+      throw new AppError(422, 'invalid_duration', `duration_bars must be a whole number of 20-minute bars from 1 to ${MAX_BARS}`);
+    case 'start_in_past':
+      throw new AppError(422, 'start_in_past', 'A Cadenza cannot start before now; the earliest start is the next grid mark');
     case 'cadenza_overlap':
       throw cadenzaOverlap(result.conflicts);
-  }
-}
-
-export function assertDuration(bars: number): void {
-  if (!Number.isInteger(bars) || bars < 1 || bars > MAX_DURATION_BARS) {
-    throw new AppError(
-      422,
-      'invalid_duration',
-      `duration_bars must be a whole number of 20-minute bars between 1 and ${MAX_DURATION_BARS}`,
-    );
   }
 }
 
@@ -132,24 +139,25 @@ async function assertOwnedGoal(db: Db, userId: string, goalId: string | null | u
   if (!g) throw notFound('Goal');
 }
 
-/**
- * Checks a block against the grid and, for a Cadenza, against the other Cadenzas on the calendar
- * (including blocks added earlier in the same transaction).
- */
-export async function checkBlock(
+/** Checks a new block, or the edit of `current`, against the rules (rules.md §1, §6). */
+async function checkBlock(
   tx: Tx,
   userId: string,
   block: { kind: EventKind; start: Date; durationBars: number },
-  ignoreId?: string,
-  extra: CalendarEvent[] = [],
+  now: Date,
+  current?: EventWithRecord,
 ) {
-  assertDuration(block.durationBars);
   const { kind, start } = block;
   const end = addBars(start, block.durationBars);
-  const calendar = kind === 'cadenza' ? [...(await loadCalendar(tx.db, userId, start, end)).map(effectiveBlock), ...extra] : [];
-  const result = validateEventBlock({ calendar, kind, start, end, eventId: ignoreId });
+  const calendar: CalendarEvent[] = [];
+  if (kind === 'cadenza') {
+    for (const row of await loadCadenzas(tx.db, userId, start, end)) {
+      if (row.event.id !== current?.event.id) calendar.push(effectiveBlock(row));
+    }
+    if (current) calendar.push(effectiveBlock(current));
+  }
+  const result = validateEventBlock({ calendar, kind, start, end, eventId: current?.event.id, now });
   if (!result.ok) throwBlockError(result);
-  return end;
 }
 
 export interface CreateEventInput {
@@ -162,12 +170,12 @@ export interface CreateEventInput {
   breakdown_item_id?: string | null;
 }
 
-export async function insertEvent(tx: Tx, deps: Deps, userId: string, input: CreateEventInput, extra: CalendarEvent[] = []) {
+/** Inserts one event inside the caller's transaction, which must hold the user lock. */
+export async function insertEvent(tx: Tx, userId: string, input: CreateEventInput, now: Date): Promise<EventWithRecord> {
   const start = new Date(input.planned_start);
   const kind = input.kind ?? 'cadenza';
-  await checkBlock(tx, userId, { kind, start, durationBars: input.duration_bars }, undefined, extra);
+  await checkBlock(tx, userId, { kind, start, durationBars: input.duration_bars }, now);
   await assertOwnedGoal(tx.db, userId, input.goal_id);
-  const now = deps.clock.now();
   const [event] = await tx.db
     .insert(events)
     .values({
@@ -190,7 +198,7 @@ export async function insertEvent(tx: Tx, deps: Deps, userId: string, input: Cre
 export async function createEvent(deps: Deps, userId: string, input: CreateEventInput) {
   return transaction(deps.database, async (tx) => {
     await lockUser(tx, userId);
-    return eventDto(await insertEvent(tx, deps, userId, input));
+    return eventDto(await insertEvent(tx, userId, input, deps.clock.now()));
   });
 }
 
@@ -204,26 +212,28 @@ export interface UpdateEventInput {
   goal_id?: string | null;
 }
 
+/**
+ * Edits an event. Only a planned event can be moved, resized or switch kind (rules.md, Editing); a Cadenza that
+ * has started, finished or been missed keeps its plan, and what happened is recorded instead.
+ */
 export async function updateEvent(deps: Deps, userId: string, eventId: string, input: UpdateEventInput) {
   return transaction(deps.database, async (tx) => {
     await lockUser(tx, userId);
+    const now = deps.clock.now();
     const current = await getOwnedEvent(tx.db, userId, eventId, true);
     const ev = current.event;
     if (ev.version !== input.version) throw versionConflict();
 
-    const reschedules = input.planned_start !== undefined || input.duration_bars !== undefined;
-    const switchesKind = input.kind !== undefined && input.kind !== ev.kind;
-    if (reschedules && ev.status !== 'planned') {
-      throw invalidState(`Only planned events can be rescheduled; this event is ${ev.status}`);
-    }
-    if (switchesKind && ev.status !== 'planned') {
-      throw invalidState(`Only planned events can switch kind; this event is ${ev.status}`);
-    }
     const kind = input.kind ?? ev.kind;
     const start = input.planned_start !== undefined ? new Date(input.planned_start) : ev.plannedStart;
-    const duration = input.duration_bars ?? ev.durationBars;
-    // Switching to a Cadenza runs the overlap check (spec §3.6).
-    if (reschedules || switchesKind) await checkBlock(tx, userId, { kind, start, durationBars: duration }, ev.id);
+    const durationBars = input.duration_bars ?? ev.durationBars;
+    const replans = kind !== ev.kind || start.getTime() !== ev.plannedStart.getTime() || durationBars !== ev.durationBars;
+    if (replans) {
+      if (ev.status !== 'planned') {
+        throw invalidState(`Only planned events can be moved, resized or switch kind; this event is ${ev.status}`);
+      }
+      await checkBlock(tx, userId, { kind, start, durationBars }, now, current);
+    }
     if (input.goal_id !== undefined) await assertOwnedGoal(tx.db, userId, input.goal_id);
 
     const [updated] = await tx.db
@@ -231,12 +241,12 @@ export async function updateEvent(deps: Deps, userId: string, eventId: string, i
       .set({
         ...(input.title !== undefined ? { title: input.title } : {}),
         ...(input.notes !== undefined ? { notes: input.notes } : {}),
-        kind,
         ...(input.goal_id !== undefined ? { goalId: input.goal_id } : {}),
+        kind,
         plannedStart: start,
-        durationBars: duration,
+        durationBars,
         version: ev.version + 1,
-        updatedAt: deps.clock.now(),
+        updatedAt: now,
       })
       .where(eq(events.id, ev.id))
       .returning();
@@ -244,37 +254,31 @@ export async function updateEvent(deps: Deps, userId: string, eventId: string, i
   });
 }
 
-export async function cancelEvent(deps: Deps, userId: string, eventId: string) {
-  return transaction(deps.database, async (tx) => {
+/**
+ * Deletes a planned event along with its change history (ON DELETE CASCADE). There is no cancelled state; a
+ * Cadenza that has started, finished or been missed keeps its record and any tokens it earned.
+ */
+export async function deleteEvent(deps: Deps, userId: string, eventId: string): Promise<void> {
+  await transaction(deps.database, async (tx) => {
     await lockUser(tx, userId);
-    const current = await getOwnedEvent(tx.db, userId, eventId, true);
-    if (current.event.status !== 'planned') {
-      throw invalidState(`Only planned events can be cancelled; this event is ${current.event.status}`);
-    }
-    const [updated] = await tx.db
-      .update(events)
-      .set({ status: 'cancelled', version: current.event.version + 1, updatedAt: deps.clock.now() })
-      .where(eq(events.id, eventId))
-      .returning();
-    return eventDto({ event: updated!, record: current.record });
+    const { event } = await getOwnedEvent(tx.db, userId, eventId, true);
+    if (event.status !== 'planned') throw invalidState(`Only planned events can be deleted; this event is ${event.status}`);
+    await tx.db.delete(events).where(eq(events.id, eventId));
   });
 }
 
-/** Events whose planned block intersects [from, to), ordered by planned_start then id. */
+/** Events whose planned block intersects [from, to). */
+const inRange = (userId: string, from: Date, to: Date) =>
+  and(eq(events.userId, userId), lt(events.plannedStart, to), sql`${plannedEndSql} > ${from}`);
+
+/** Events in [from, to), ordered by planned_start then id, a page at a time. */
 export async function listEvents(db: Db, userId: string, from: Date, to: Date, cursor: string | undefined, limit: number) {
   const c = decodeCursor(cursor, ['s', 'id'] as const);
-  const rows = await db
-    .select({ event: events, record: eventRecords })
-    .from(events)
-    .leftJoin(eventRecords, eq(eventRecords.eventId, events.id))
+  const rows = await selectEvents(db)
     .where(
       and(
-        eq(events.userId, userId),
-        sql`${events.plannedStart} < ${to}`,
-        sql`${events.plannedStart} + ${events.durationBars} * interval '20 minutes' > ${from}`,
-        c
-          ? or(gt(events.plannedStart, new Date(c.s)), and(eq(events.plannedStart, new Date(c.s)), gt(events.id, c.id)))
-          : undefined,
+        inRange(userId, from, to),
+        c ? or(gt(events.plannedStart, new Date(c.s)), and(eq(events.plannedStart, new Date(c.s)), gt(events.id, c.id))) : undefined,
       ),
     )
     .orderBy(asc(events.plannedStart), asc(events.id))
@@ -287,19 +291,8 @@ export async function listEvents(db: Db, userId: string, from: Date, to: Date, c
   };
 }
 
-/** Every event (any status) whose planned block intersects [from, to), for GET /v1/calendar. */
+/** Every event in [from, to), for GET /v1/calendar. */
 export async function eventsInRange(db: Db, userId: string, from: Date, to: Date) {
-  const rows = await db
-    .select({ event: events, record: eventRecords })
-    .from(events)
-    .leftJoin(eventRecords, eq(eventRecords.eventId, events.id))
-    .where(
-      and(
-        eq(events.userId, userId),
-        sql`${events.plannedStart} < ${to}`,
-        sql`${events.plannedStart} + ${events.durationBars} * interval '20 minutes' > ${from}`,
-      ),
-    )
-    .orderBy(asc(events.plannedStart), asc(events.id));
+  const rows = await selectEvents(db).where(inRange(userId, from, to)).orderBy(asc(events.plannedStart), asc(events.id));
   return rows.map(eventDto);
 }

@@ -6,7 +6,6 @@ const csv = z
 
 // 12-factor config: everything comes from the environment and is validated once at boot.
 const ConfigSchema = z.object({
-  NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),
   PORT: z.coerce.number().int().positive().default(3000),
   LOG_LEVEL: z.enum(['fatal', 'error', 'warn', 'info', 'debug', 'trace', 'silent']).default('info'),
   DATABASE_URL: z.string().min(1),
@@ -19,16 +18,17 @@ const ConfigSchema = z.object({
   // Comma-separated audiences accepted in Apple ID tokens: the iOS bundle ID, later the web Services ID.
   APPLE_CLIENT_IDS: csv.pipe(z.array(z.string()).min(1)),
 
-  // Offline taps: accepted if the device time is within this window of server time (spec Q4).
+  // Offline taps: accepted if the device time is within this window of server time (rules.md §2).
   TAP_MAX_AGE_HOURS: z.coerce.number().positive().default(24),
   TAP_MAX_FUTURE_SKEW_SECONDS: z.coerce.number().nonnegative().default(120),
 
-  AI_PROVIDER: z.enum(['qwen', 'fake']).default('qwen'),
+  // DeepSeek Flash through SiliconFlow's OpenAI-compatible API; `fake` for local development and tests.
+  AI_PROVIDER: z.enum(['siliconflow', 'fake']).default('siliconflow'),
   AI_DAILY_BREAKDOWN_LIMIT: z.coerce.number().int().nonnegative().default(5),
-  QWEN_API_KEY: z.string().optional(),
-  // Model Studio international (Singapore/HK) OpenAI-compatible endpoint.
-  QWEN_BASE_URL: z.string().url().default('https://dashscope-intl.aliyuncs.com/compatible-mode/v1'),
-  QWEN_MODEL: z.string().default('qwen-plus'),
+  SILICONFLOW_API_KEY: z.string().optional(),
+  SILICONFLOW_BASE_URL: z.string().url().default('https://api.siliconflow.com/v1'),
+  // SiliconFlow's model ID for the latest DeepSeek Flash.
+  SILICONFLOW_MODEL: z.string().optional(),
   AI_TIMEOUT_MS: z.coerce.number().int().positive().default(60_000),
 
   // Nightly pg_dump to Alibaba Cloud OSS. The backup job is only scheduled when these are set.
@@ -49,8 +49,11 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     throw new Error(`Invalid configuration: ${issues}`);
   }
   const config = parsed.data;
-  if (config.AI_PROVIDER === 'qwen' && !config.QWEN_API_KEY) {
-    throw new Error('Invalid configuration: QWEN_API_KEY is required when AI_PROVIDER=qwen');
+  if (config.AI_PROVIDER === 'siliconflow') {
+    const missing = (['SILICONFLOW_API_KEY', 'SILICONFLOW_MODEL'] as const).filter((k) => !config[k]);
+    if (missing.length > 0) {
+      throw new Error(`Invalid configuration: ${missing.join(' and ')} required when AI_PROVIDER=siliconflow`);
+    }
   }
   return config;
 }

@@ -1,7 +1,7 @@
 import { type GridRules, DEFAULT_GRID_RULES, MINUTE_MS, barMs } from './constants.js';
 
 /**
- * snap(t) = the grid mark g with g − before < t ≤ g + after (spec §3.2).
+ * snap(t) = the grid mark g with g − before < t ≤ g + after (rules.md §2).
  * Grid marks are UTC :00/:20/:40, which equal local marks in whole-hour zones.
  */
 export function snap(t: Date, rules: GridRules = DEFAULT_GRID_RULES): Date {

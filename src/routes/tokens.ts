@@ -1,8 +1,6 @@
 import { createRoute, z } from '@hono/zod-openapi';
-import { eq } from 'drizzle-orm';
-import { users } from '../db/schema.js';
 import { listBadges, redeemBadge } from '../services/badges.js';
-import { ledgerDto, listLedger } from '../services/ledger.js';
+import { listLedger } from '../services/ledger.js';
 import { IdParam, IdempotencyHeaders, PageQuery, type RouteModule, errors, json, security } from './common.js';
 import { BadgeSchema, LedgerEntrySchema } from './schemas.js';
 
@@ -26,11 +24,7 @@ export const tokenRoutes: RouteModule = (app, deps) => {
     }),
     async (c) => {
       const q = c.req.valid('query');
-      const userId = c.get('userId');
-      const db = deps.database.db;
-      const page = await listLedger(db, userId, q.cursor ?? null, q.limit);
-      const [u] = await db.select({ balance: users.tokenBalance }).from(users).where(eq(users.id, userId));
-      return c.json({ balance: u!.balance, entries: page.entries.map(ledgerDto), next_cursor: page.nextCursor }, 200);
+      return c.json(await listLedger(deps.database.db, c.get('userId'), q.cursor, q.limit), 200);
     },
   );
 

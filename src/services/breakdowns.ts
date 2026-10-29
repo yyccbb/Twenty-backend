@@ -8,7 +8,7 @@ import { type BreakdownJob, JOBS } from '../jobs/queue.js';
 import { AppError, invalidState, notFound } from '../lib/errors.js';
 import { logger } from '../lib/logger.js';
 import { iso } from '../lib/time.js';
-import { type CalendarEvent, type EventKind, addBars, localParts, localToUtc } from '../rules/index.js';
+import { type EventKind, localParts, localToUtc } from '../rules/index.js';
 import { eventDto, insertEvent } from './events.js';
 import { getOwnedGoal } from './goals.js';
 import { getUserContext } from './users.js';
@@ -133,38 +133,37 @@ export interface AcceptItem {
   notes?: string | null;
 }
 
-/** Places chosen breakdown items on the calendar as events (Cadenzas unless `kind` says otherwise), all in one transaction. */
+/**
+ * Places chosen breakdown items on the calendar as events (Cadenzas unless `kind` says otherwise), all in one
+ * transaction: each item is checked against the events inserted before it, and any rule violation rejects them all.
+ */
 export async function acceptBreakdown(deps: Deps, userId: string, id: string, items: AcceptItem[]) {
   return transaction(deps.database, async (tx) => {
     await lockUser(tx, userId);
+    const now = deps.clock.now();
     const [b] = await tx.db.select().from(aiBreakdowns).where(and(eq(aiBreakdowns.id, id), eq(aiBreakdowns.userId, userId)));
     if (!b) throw notFound('Breakdown');
     if (b.status !== 'done' || !b.result) throw invalidState(`The breakdown is ${b.status}`);
     const byId = new Map(b.result.items.map((i) => [i.id, i]));
 
-    const added: CalendarEvent[] = [];
     const created = [];
     for (const choice of items) {
       const item = byId.get(choice.item_id);
       if (!item) throw new AppError(422, 'unknown_item', `Item ${choice.item_id} is not part of this breakdown`);
-      const bars = choice.duration_bars ?? item.duration_bars;
-      const kind = choice.kind ?? 'cadenza';
       const row = await insertEvent(
         tx,
-        deps,
         userId,
         {
           title: choice.title ?? item.title,
           notes: choice.notes !== undefined ? choice.notes : item.description,
           planned_start: choice.planned_start,
-          kind,
-          duration_bars: bars,
+          kind: choice.kind ?? 'cadenza',
+          duration_bars: choice.duration_bars ?? item.duration_bars,
           goal_id: b.goalId,
           breakdown_item_id: item.id,
         },
-        added,
+        now,
       );
-      added.push({ id: row.event.id, kind, start: row.event.plannedStart, end: addBars(row.event.plannedStart, bars), status: 'planned' });
       created.push(eventDto(row));
     }
     return { events: created };

@@ -49,14 +49,21 @@ export function ledgerDto(e: LedgerRow) {
   };
 }
 
-/** Newest first. UUIDv7 IDs sort by creation time, so the ID alone is the cursor. */
-export async function listLedger(db: Db, userId: string, cursor: string | null, limit: number) {
-  const rows = await db
-    .select()
-    .from(tokenLedger)
-    .where(and(eq(tokenLedger.userId, userId), cursor ? lt(tokenLedger.id, cursor) : undefined))
-    .orderBy(desc(tokenLedger.id))
-    .limit(limit + 1);
+/** The balance and a page of its history, newest first. UUIDv7 IDs sort by creation time, so the ID alone is the cursor. */
+export async function listLedger(db: Db, userId: string, cursor: string | undefined, limit: number) {
+  const [rows, [user]] = await Promise.all([
+    db
+      .select()
+      .from(tokenLedger)
+      .where(and(eq(tokenLedger.userId, userId), cursor ? lt(tokenLedger.id, cursor) : undefined))
+      .orderBy(desc(tokenLedger.id))
+      .limit(limit + 1),
+    db.select({ balance: users.tokenBalance }).from(users).where(eq(users.id, userId)),
+  ]);
   const page = rows.slice(0, limit);
-  return { entries: page, nextCursor: rows.length > limit ? page[page.length - 1]!.id : null };
+  return {
+    balance: user!.balance,
+    entries: page.map(ledgerDto),
+    next_cursor: rows.length > limit ? page[page.length - 1]!.id : null,
+  };
 }

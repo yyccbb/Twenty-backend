@@ -4,12 +4,14 @@ import { uuidv7 } from '../db/ids.js';
 import { eventChanges, eventRecords, events, users } from '../db/schema.js';
 import type { Deps } from '../deps.js';
 import { type AutoFinishJob, JOBS } from '../jobs/queue.js';
-import { AppError, cadenzaOverlap, invalidState, notCadenza } from '../lib/errors.js';
+import { AppError, cadenzaOverlap, invalidState, notCadenza, notFound } from '../lib/errors.js';
 import { logger } from '../lib/logger.js';
-import { addDays, addMinutes, iso } from '../lib/time.js';
+import { addMinutes, iso } from '../lib/time.js';
 import {
+  type CalendarEvent,
   DEFAULT_GRID_RULES,
-  type TokenResult,
+  type ExtendResult,
+  MAX_BARS,
   addBars,
   barsBetween,
   computeTokens,
@@ -17,16 +19,27 @@ import {
   recordFinish,
   recordStart,
 } from '../rules/index.js';
-import { type EventWithRecord, effectiveBlock, eventDto, getOwnedEvent, loadCalendar, plannedEnd } from './events.js';
+import {
+  type EventRow,
+  type EventWithRecord,
+  type RecordRow,
+  effectiveBlock,
+  eventDto,
+  getOwnedEvent,
+  loadCadenzas,
+  plannedEnd,
+  plannedEndSql,
+} from './events.js';
 import { appendLedgerEntry } from './ledger.js';
 import { getActiveRewardRule, getRewardRule } from './rewardRules.js';
 import { getUserContext } from './users.js';
 
 const GRACE_MINUTES = DEFAULT_GRID_RULES.snapAfterMinutes;
-/** Upper bound on one extension call (the spec sets none). */
-export const MAX_EXTEND_BARS = 72;
 
-/** Offline taps are accepted if the device time is within TAP_MAX_AGE_HOURS and not in the future (spec Q4). */
+/** E + 5: the finish window closes and the Cadenza is auto-finished (rules.md §4). */
+const autoFinishAt = (event: EventRow) => addMinutes(plannedEnd(event), GRACE_MINUTES);
+
+/** Device tap times are accepted up to TAP_MAX_AGE_HOURS old and TAP_MAX_FUTURE_SKEW_SECONDS ahead (rules.md §2). */
 function assertSaneTap(deps: Deps, tappedAt: Date): void {
   const now = deps.clock.now().getTime();
   const t = tappedAt.getTime();
@@ -38,15 +51,16 @@ function assertSaneTap(deps: Deps, tappedAt: Date): void {
   }
 }
 
-async function scheduleAutoFinish(deps: Deps, tx: Tx, eventId: string, end: Date) {
-  const data: AutoFinishJob = { event_id: eventId, expected_end: iso(end) };
-  await deps.queue.send(JOBS.autoFinish, data, { startAfter: addMinutes(end, GRACE_MINUTES), tx });
+async function scheduleAutoFinish(deps: Deps, tx: Tx, event: EventRow) {
+  const data: AutoFinishJob = { event_id: event.id, expected_end: iso(plannedEnd(event)) };
+  await deps.queue.send(JOBS.autoFinish, data, { startAfter: autoFinishAt(event), tx });
 }
 
 export async function startEvent(deps: Deps, userId: string, eventId: string, tappedAt: Date) {
   assertSaneTap(deps, tappedAt);
   return transaction(deps.database, async (tx) => {
     await lockUser(tx, userId);
+    const now = deps.clock.now();
     const { event, record } = await getOwnedEvent(tx.db, userId, eventId, true);
     if (event.kind !== 'cadenza') throw notCadenza();
     // close_stale may have marked the event missed before a queued offline tap arrived; that tap still counts.
@@ -56,15 +70,25 @@ export async function startEvent(deps: Deps, userId: string, eventId: string, ta
     }
 
     const end = plannedEnd(event);
-    const calendar = (await loadCalendar(tx.db, userId, addMinutes(event.plannedStart, -60), end)).map(effectiveBlock);
+    const calendar: CalendarEvent[] = [];
+    for (const row of await loadCadenzas(tx.db, userId, addBars(event.plannedStart, -DEFAULT_GRID_RULES.maxEarlyBars), end)) {
+      // A Cadenza is auto-finished at E + 5 even if its job hasn't run yet, so it no longer blocks this start.
+      const overdue = row.event.status === 'in_progress' && now.getTime() >= autoFinishAt(row.event).getTime();
+      calendar.push(effectiveBlock(overdue ? (await settle(deps, tx, row, null)).row : row));
+    }
     const result = recordStart({ plannedStart: event.plannedStart, plannedEnd: end, tappedAt, eventId, calendar });
     if (result.outcome === 'rejected') {
-      if (result.error === 'cadenza_overlap') throw cadenzaOverlap(result.conflicts);
-      throw new AppError(422, 'too_early', 'A Cadenza can be started at most 2 bars (40 min) early');
+      switch (result.error) {
+        case 'too_early':
+          throw new AppError(422, 'too_early', 'A Cadenza can be started at most 2 bars (40 min) early');
+        case 'cadenza_in_progress':
+          throw new AppError(409, 'cadenza_in_progress', 'Another Cadenza is still in progress; finish it first', result.conflicts);
+        case 'cadenza_overlap':
+          throw cadenzaOverlap(result.conflicts);
+      }
     }
 
     const rule = await getActiveRewardRule(tx.db);
-    const now = deps.clock.now();
     const started = result.outcome !== 'missed';
     const [rec] = await tx.db
       .insert(eventRecords)
@@ -91,7 +115,7 @@ export async function startEvent(deps: Deps, userId: string, eventId: string, ta
       if (result.early_bars > 0) {
         await tx.db.insert(eventChanges).values({ id: uuidv7(), eventId, kind: 'early_start', deltaBars: result.early_bars });
       }
-      await scheduleAutoFinish(deps, tx, eventId, end);
+      await scheduleAutoFinish(deps, tx, updated!);
     }
 
     return {
@@ -104,26 +128,30 @@ export async function startEvent(deps: Deps, userId: string, eventId: string, ta
   });
 }
 
-const EXTEND_ERRORS = {
-  invalid_bars: [422, 'bars must be a whole number of bars, at least 1'],
-  not_found: [404, 'Event not found'],
-  not_cadenza: [409, 'Only Cadenzas can be started, extended or finished; this event is a Tutti'],
-  not_in_progress: [409, 'Only a Cadenza in progress can be extended'],
-  window_closed: [409, 'The extend window closed 5 minutes after the planned end'],
-  pushed_event_locked: [409, 'The extension would push a Cadenza that is already in progress or done'],
-} as const;
+function extendError(plan: Extract<ExtendResult, { ok: false }>): AppError {
+  switch (plan.error) {
+    case 'invalid_bars':
+      return new AppError(422, 'invalid_bars', `bars must be a whole number from 1 to ${MAX_BARS}`);
+    case 'not_found':
+      return notFound('Event');
+    case 'not_cadenza':
+      return notCadenza();
+    case 'not_in_progress':
+      return invalidState('Only a Cadenza in progress can be extended');
+    case 'window_closed':
+      return new AppError(409, 'window_closed', 'The extend window closed 5 minutes after the planned end');
+    case 'pushed_event_locked':
+      return new AppError(409, 'pushed_event_locked', 'The extension would push a Cadenza that has already started', plan.conflicts);
+  }
+}
 
 export async function extendEvent(deps: Deps, userId: string, eventId: string, bars: number, dryRun: boolean) {
   return transaction(deps.database, async (tx) => {
     await lockUser(tx, userId);
     const now = deps.clock.now();
     const target = await getOwnedEvent(tx.db, userId, eventId, true);
-    if (bars > MAX_EXTEND_BARS) {
-      throw new AppError(422, 'invalid_bars', `At most ${MAX_EXTEND_BARS} bars can be added at once`);
-    }
-    const oldEnd = plannedEnd(target.event);
-    // Cascades only reach Cadenzas that start after the old end; two weeks is far more than any real chain.
-    const rows = await loadCalendar(tx.db, userId, addDays(oldEnd, -1), addDays(oldEnd, 14));
+    // The cascade can reach any later Cadenza, so there is no upper bound.
+    const rows = await loadCadenzas(tx.db, userId, effectiveBlock(target).start);
     const byId = new Map(rows.map((r) => [r.event.id, r]));
     byId.set(target.event.id, target);
     const ctx = await getUserContext(tx.db, userId);
@@ -136,26 +164,21 @@ export async function extendEvent(deps: Deps, userId: string, eventId: string, b
       timezone: ctx.timezone,
       dayEndLocalTime: ctx.dayEndLocalTime,
     });
-    if (!plan.ok) {
-      const [status, message] = EXTEND_ERRORS[plan.error];
-      throw new AppError(status, plan.error, message, 'conflicts' in plan ? plan.conflicts : undefined);
-    }
+    if (!plan.ok) throw extendError(plan);
 
-    let event = target.event;
-    let record = target.record;
+    let { event, record } = target;
     const movedVersions = new Map<string, number>();
     if (!dryRun) {
       [event] = (await tx.db
         .update(events)
         .set({ durationBars: event.durationBars + bars, version: event.version + 1, updatedAt: now })
         .where(eq(events.id, eventId))
-        .returning()) as [typeof event];
-      const [extendedRecord] = await tx.db
+        .returning()) as [EventRow];
+      [record] = (await tx.db
         .update(eventRecords)
         .set({ extendedBars: sql`${eventRecords.extendedBars} + ${bars}`, updatedAt: now })
         .where(eq(eventRecords.eventId, eventId))
-        .returning();
-      record = extendedRecord!;
+        .returning()) as [RecordRow];
       await tx.db.insert(eventChanges).values({ id: uuidv7(), eventId, kind: 'extend', deltaBars: bars });
       for (const m of plan.moved) {
         const [shifted] = await tx.db
@@ -170,7 +193,7 @@ export async function extendEvent(deps: Deps, userId: string, eventId: string, b
           .insert(eventChanges)
           .values({ id: uuidv7(), eventId: m.id, kind: 'cascade_shift', deltaBars, causedByEventId: eventId });
       }
-      await scheduleAutoFinish(deps, tx, eventId, plan.new_end);
+      await scheduleAutoFinish(deps, tx, event);
     }
 
     return {
@@ -188,20 +211,16 @@ export async function extendEvent(deps: Deps, userId: string, eventId: string, b
   });
 }
 
-interface FinishOutcome {
-  finish_kind: 'on_time' | 'shortened' | 'auto' | 'abandoned';
-  recorded_end: string | null;
-  tokens: TokenResult;
-  tokens_awarded: number;
-  token_balance: number;
-  event: ReturnType<typeof eventDto>;
-}
-
-async function settle(deps: Deps, tx: Tx, current: EventWithRecord, tappedAt: Date | null): Promise<FinishOutcome> {
+/**
+ * Finishes an in-progress Cadenza from a tap, or as an auto-finish when `tappedAt` is null, and pays for it.
+ * On a Cadenza the job already auto-finished, a tap made by E + 5 replaces that result with a ledger adjustment.
+ */
+async function settle(deps: Deps, tx: Tx, current: EventWithRecord, tappedAt: Date | null) {
   const { event } = current;
   const record = current.record!;
   const now = deps.clock.now();
   const result = recordFinish({ recordedStart: record.recordedStart!, plannedEnd: plannedEnd(event), tappedAt });
+  if ('error' in result) throw new AppError(409, 'window_closed', 'The finish window closed 5 minutes after the planned end');
   const recordedEnd = 'recorded_end' in result ? result.recorded_end : null;
   const rule = await getRewardRule(tx.db, record.rulesVersion);
   const tokens = computeTokens(
@@ -215,9 +234,7 @@ async function settle(deps: Deps, tx: Tx, current: EventWithRecord, tappedAt: Da
     rule,
   );
   const awarded = tokens.tokens;
-  // A late-arriving offline tap can replace a job-made auto-finish; the ledger gets a correction entry.
   const correcting = event.status === 'done';
-  const previous = record.tokensAwarded ?? 0;
 
   const [rec] = await tx.db
     .update(eventRecords)
@@ -230,7 +247,7 @@ async function settle(deps: Deps, tx: Tx, current: EventWithRecord, tappedAt: Da
     .where(eq(events.id, event.id))
     .returning();
 
-  const delta = correcting ? awarded - previous : awarded;
+  const delta = correcting ? awarded - (record.tokensAwarded ?? 0) : awarded;
   if (delta !== 0) {
     await appendLedgerEntry(tx, {
       userId: event.userId,
@@ -242,13 +259,17 @@ async function settle(deps: Deps, tx: Tx, current: EventWithRecord, tappedAt: Da
     });
   }
   const [u] = await tx.db.select({ balance: users.tokenBalance }).from(users).where(eq(users.id, event.userId));
+  const row: EventWithRecord = { event: updated!, record: rec! };
   return {
-    finish_kind: result.finish_kind,
-    recorded_end: recordedEnd ? iso(recordedEnd) : null,
-    tokens,
-    tokens_awarded: awarded,
-    token_balance: u!.balance,
-    event: eventDto({ event: updated!, record: rec! }),
+    row,
+    body: {
+      finish_kind: result.finish_kind,
+      recorded_end: recordedEnd ? iso(recordedEnd) : null,
+      tokens,
+      tokens_awarded: awarded,
+      token_balance: u!.balance,
+      event: eventDto(row),
+    },
   };
 }
 
@@ -259,12 +280,12 @@ export async function finishEvent(deps: Deps, userId: string, eventId: string, t
     const current = await getOwnedEvent(tx.db, userId, eventId, true);
     const { event, record } = current;
     if (event.kind !== 'cadenza') throw notCadenza();
-    if (event.status === 'in_progress') return settle(deps, tx, current, tappedAt);
-
-    const graceEnd = addMinutes(plannedEnd(event), GRACE_MINUTES);
+    // Only one finish tap counts: the first, or one that replaces the job's auto-finish (rules.md §4).
     const autoByJob = event.status === 'done' && record?.finishKind === 'auto' && record.finishTappedAt === null;
-    if (autoByJob && tappedAt.getTime() <= graceEnd.getTime()) return settle(deps, tx, current, tappedAt);
-    throw invalidState(`Only an event in progress can be finished; this event is ${event.status}`);
+    if (event.status !== 'in_progress' && !autoByJob) {
+      throw invalidState(`Only a Cadenza in progress can be finished; this event is ${event.status}`);
+    }
+    return (await settle(deps, tx, current, tappedAt)).body;
   });
 }
 
@@ -275,9 +296,9 @@ export async function autoFinishEvent(deps: Deps, eventId: string, expectedEnd: 
   return transaction(deps.database, async (tx) => {
     await lockUser(tx, owner.userId);
     const current = await getOwnedEvent(tx.db, owner.userId, eventId, true);
-    const end = plannedEnd(current.event);
-    if (current.event.status !== 'in_progress' || end.getTime() !== expectedEnd.getTime()) return false;
-    if (deps.clock.now().getTime() < addMinutes(end, GRACE_MINUTES).getTime()) return false;
+    const { event } = current;
+    if (event.status !== 'in_progress' || plannedEnd(event).getTime() !== expectedEnd.getTime()) return false;
+    if (deps.clock.now().getTime() < autoFinishAt(event).getTime()) return false;
     await settle(deps, tx, current, null);
     return true;
   });
@@ -285,34 +306,24 @@ export async function autoFinishEvent(deps: Deps, eventId: string, expectedEnd: 
 
 /**
  * The events.close_stale job: planned Cadenzas whose end has passed become missed (Tuttis are left alone).
- * It also auto-finishes any in-progress Cadenza whose auto-finish job was lost, as a safety net.
+ * As a safety net it also auto-finishes any Cadenza still in progress more than 6 minutes after E, in case
+ * its auto-finish job was lost (rules.md §4).
  */
 export async function closeStaleEvents(deps: Deps): Promise<{ missed: number; autoFinished: number }> {
   const now = deps.clock.now();
   const missed = await deps.database.db
     .update(events)
     .set({ status: 'missed', version: sql`${events.version} + 1`, updatedAt: now })
-    .where(
-      and(
-        eq(events.status, 'planned'),
-        eq(events.kind, 'cadenza'),
-        sql`${events.plannedStart} + ${events.durationBars} * interval '20 minutes' <= ${now}`,
-      ),
-    )
+    .where(and(eq(events.status, 'planned'), eq(events.kind, 'cadenza'), sql`${plannedEndSql} <= ${now}`))
     .returning({ id: events.id });
 
   const overdue = await deps.database.db
     .select({ id: events.id, plannedStart: events.plannedStart, durationBars: events.durationBars })
     .from(events)
-    .where(
-      and(
-        eq(events.status, 'in_progress'),
-        sql`${events.plannedStart} + ${events.durationBars} * interval '20 minutes' + interval '6 minutes' <= ${now}`,
-      ),
-    );
+    .where(and(eq(events.status, 'in_progress'), sql`${plannedEndSql} + interval '6 minutes' < ${now}`));
   let autoFinished = 0;
   for (const e of overdue) {
-    if (await autoFinishEvent(deps, e.id, addBars(e.plannedStart, e.durationBars))) autoFinished++;
+    if (await autoFinishEvent(deps, e.id, plannedEnd(e))) autoFinished++;
   }
   if (missed.length || autoFinished) logger.info({ missed: missed.length, autoFinished }, 'closed stale events');
   return { missed: missed.length, autoFinished };

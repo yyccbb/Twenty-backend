@@ -22,7 +22,7 @@ function overlapMs(a0: number, a1: number, b0: number, b1: number): number {
 }
 
 /**
- * tokens = v·planned + rate_early·v·early + rate_ext·v·extended − v·deduction, floored at 0 (spec §3.7). Only Cadenzas earn tokens.
+ * tokens = v·planned + rate_early·v·early + rate_ext·v·extended − v·deduction, floored at 0 (rules.md §7). Only Cadenzas earn tokens.
  * Late starts and early finishes simply complete fewer planned bars; there is no extra penalty.
  */
 export function computeTokens(

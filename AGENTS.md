@@ -23,7 +23,7 @@ This repo is the **backend**. Product and design sources live in the `Twenty` re
 
 If code and `rules.md` disagree, follow `rules.md` and flag the mismatch. If the rules are silent or ambiguous, ask instead of inventing behaviour, especially for timing and token rules.
 
-The repo is empty right now. Build it to match the layout and stack below.
+The code follows the layout and stack below.
 
 ## What the backend owns
 
@@ -39,7 +39,7 @@ Not in the MVP: push notifications (iOS schedules local notifications itself), r
 - **PostgreSQL 17**, with **Drizzle ORM and drizzle-kit**. Migrations are plain SQL.
 - **pg-boss** for background jobs and cron. There is no Redis.
 - **Auth:** Sign in with Apple (the server verifies the ID token with `jose`) or email + password (scrypt via `node:crypto`; the email is format-checked only, with no verification email in the MVP). Email and Apple accounts are separate. Either way the server issues its own JWT access token (15 min) and a rotating refresh token.
-- **AI:** Qwen through Alibaba Cloud Model Studio's OpenAI-compatible endpoint (`openai` SDK with a custom `baseURL`), behind an `AiProvider` interface. Claude and OpenAI aren't available in mainland China or Hong Kong, so nothing outside `src/ai/` may depend on a specific provider.
+- **AI:** DeepSeek Flash (the latest version) through SiliconFlow's OpenAI-compatible API (`openai` SDK with a custom `baseURL`), behind an `AiProvider` interface. Claude and OpenAI aren't available in mainland China or Hong Kong, so nothing outside `src/ai/` may depend on a specific provider.
 - **pino** for JSON logs. Every log line includes the request ID.
 - **Vitest** for tests, with **Testcontainers** for a real Postgres. Don't mock the database in ledger or transaction tests.
 - **Docker / Docker Compose** (Caddy, api, worker, postgres). MVP deployment is a single server on Alibaba Cloud Hong Kong. Push images to Alibaba Container Registry (Docker Hub is unreliable from mainland China).
@@ -51,7 +51,7 @@ src/
 ├── rules/      # pure 20-min / grace / Cadenza overlap / cascade / token logic: NO I/O, no DB, no clock
 ├── routes/     # Hono routes + Zod-OpenAPI schemas
 ├── services/   # events, recording, ledger, goals, cues
-├── ai/         # AiProvider interface, qwen.ts (claude.ts later)
+├── ai/         # AiProvider interface, siliconflow.ts and fake.ts (claude.ts later)
 ├── jobs/       # pg-boss workers
 ├── auth/       # Apple token verification, email/password, JWT, refresh rotation
 └── db/         # Drizzle schema + migrations
@@ -64,13 +64,13 @@ The API and the worker are built from the same image, with separate entry points
 
 ## Core rules (summary; the full version is in `vendor/Twenty/docs/developer-guide/rules.md`)
 
-- **Kinds:** every event has `kind` `cadenza` or `tutti`. Both sit on the grid and last whole bars. Only Cadenzas are started, extended, finished, rewarded, pushed by cascades or checked for overlap; start/extend/finish on a Tutti returns `409 not_cadenza`. Tuttis are only ever `planned` or `cancelled`. A planned event can switch kind with `PATCH` (switching to Cadenza runs the overlap check; a started, done or missed Cadenza can't switch: `409 invalid_state`).
-- **Grid:** 1 bar = 20 minutes. Grid marks are :00, :20 and :40. All times are stored as UTC `timestamptz`, along with the user's IANA time zone. Only **whole-hour UTC offsets** are supported, so all grid math runs in UTC. Half-hour and 45-minute zones (India, Nepal and others) must be reported as unsupported.
+- **Kinds:** every event has `kind` `cadenza` or `tutti`. Both sit on the grid and last whole bars. Only Cadenzas are started, extended, finished, rewarded, pushed by cascades or checked for overlap; start/extend/finish on a Tutti returns `409 not_cadenza`. Tuttis are only ever `planned`. There is no cancelled state: `DELETE` removes a planned event with its change history. Only planned events can be moved, resized, deleted or switch kind with `PATCH` (switching to Cadenza runs the overlap and past checks); a started, done or missed Cadenza gets `409 invalid_state`.
+- **Grid:** 1 bar = 20 minutes. Grid marks are :00, :20 and :40. All times are stored as UTC `timestamptz`, along with the user's IANA time zone. Only **whole-hour UTC offsets** are supported, so all grid math runs in UTC. Half-hour and 45-minute zones (India, Nepal and others) must be reported as unsupported. Events last 1 to 72 bars. A Cadenza can't start before now (`422 start_in_past`) on create, a move or a switch from Tutti; Tuttis can be planned any time.
 - **Snap:** `snap(t)` is the grid mark `g` with `g − 15 min < t ≤ g + 5 min`. The same window applies to start and finish taps, with a 5-minute grace; the only exception is a finish at the planned end (below).
-- **Start:** `recorded_start = snap(tap)`. The planned end doesn't move. An early start of up to 2 bars is allowed; more than that is rejected, as is one that would overlap another Cadenza. Snapping to or past the end counts as **missed**.
-- **Finish:** a tap in `(E−5, E+5]` records `E` (on time). An earlier tap records `snap(tap)` (**shortened**), except that a tap in `(E−15, E−5]` records `E−20`, not `E`, so finishing more than 5 minutes early loses the last bar. Later events are not moved. If nothing happens by `E+5`, the event is **auto-finished**, recorded at `E`, and one bar of reward is deducted. Auto-finish is a pg-boss job delayed to `E+5`, rescheduled whenever `E` changes. A finish that snaps to the recorded start or earlier counts as **abandoned**.
-- **Extend:** adds whole bars, either during the Cadenza or from the end prompt. Later Cadenzas it runs into are **pushed later in a cascade** by the smallest shift that clears each overlap (each starts exactly at the previous one's new end, so gaps are used up first; stop at the first Cadenza that already clears). Tuttis never move. Everything happens in one transaction, and the response lists every moved Cadenza. `dry_run` returns a preview. The extension is rejected (`pushed_event_locked`) if a Cadenza that would be pushed is already in progress or done. Pushes past the user's `day_end_local_time` are allowed but come with a warning.
-- **Overlap:** a **Cadenza never overlaps another Cadenza**; Tuttis overlap anything, without limit. Intervals are half-open `[start, end)`. Cues, and Cadenzas that are cancelled or missed, don't count. Checked on create, edit (including a kind switch) and early start. A violation returns `409 cadenza_overlap` with the sorted IDs of the conflicting Cadenzas.
+- **Start:** `recorded_start = snap(tap)`. The planned end doesn't move. An early start of up to 2 bars is allowed; more than that is rejected, as is one that would overlap another Cadenza. Only one Cadenza can be in progress at a time (`409 cadenza_in_progress`). Snapping to or past the end counts as **missed**.
+- **Finish:** a tap in `(E−5, E+5]` records `E` (on time). An earlier tap records `snap(tap)` (**shortened**), except that a tap in `(E−15, E−5]` records `E−20`, not `E`, so finishing more than 5 minutes early loses the last bar. Later events are not moved. If nothing happens by `E+5`, the event is **auto-finished**, recorded at `E`, and one bar of reward is deducted. Auto-finish is a pg-boss job delayed to `E+5`, rescheduled whenever `E` changes. A finish tap after `E+5` gets `409 window_closed`; one made by `E+5` that arrives after the auto-finish replaces it once, with a ledger `adjustment`. A finish that snaps to the recorded start or earlier counts as **abandoned**.
+- **Extend:** adds 1 to 72 bars, either during the Cadenza or from the end prompt (until `E+5`, then `409 window_closed`). Later Cadenzas it runs into are **pushed later in a cascade** by the smallest shift that clears each overlap (each starts exactly at the previous one's new end, so gaps are used up first; stop at the first Cadenza that already clears). Tuttis never move. Everything happens in one transaction, and the response lists every moved Cadenza. `dry_run` returns a preview. The extension is rejected (`pushed_event_locked`) if a Cadenza that would be pushed is already in progress or done. Pushes past the user's `day_end_local_time` are allowed but come with a warning.
+- **Overlap:** a **Cadenza never overlaps another Cadenza**; Tuttis overlap anything, without limit. Intervals are half-open `[start, end)`. Cues and missed Cadenzas don't count; a finished Cadenza occupies only the time it ran. Checked on create, edit (including a kind switch) and early start. A violation returns `409 cadenza_overlap` with the sorted IDs of the conflicting Cadenzas.
 - **Tokens (Cadenzas only):** `v × planned_bars_completed + 0.5v × early_bars + 0.5v × extended_bars_completed − v × auto_finished`, floored at 0. A late start loses only the missed bars, with no extra penalty. A missed Cadenza earns and costs nothing. Every parameter lives in a versioned `reward_rules` row, and each ledger entry records the rule version used. Tuttis and cues never earn tokens.
 - **Cues** (reminders): any minute (not tied to the grid), no duration, no tokens. Repeats use RFC 5545 `RRULE`, expanded on the server with `rrule`. Per-occurrence state is keyed by the occurrence's original time. Edits apply to **this occurrence, this and following (split the series, linked by `series_id`), or all**.
 

@@ -1,9 +1,9 @@
 import OpenAI from 'openai';
 import type { AiJsonCompletion, AiMessage, AiProvider } from './provider.js';
 
-/** Qwen through Alibaba Cloud Model Studio's OpenAI-compatible endpoint. */
-export class QwenProvider implements AiProvider {
-  readonly name = 'qwen';
+/** DeepSeek Flash through SiliconFlow's OpenAI-compatible API. */
+export class SiliconFlowProvider implements AiProvider {
+  readonly name = 'siliconflow';
   private readonly client: OpenAI;
 
   constructor(

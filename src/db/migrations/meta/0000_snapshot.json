@@ -1,5 +1,5 @@
 {
-  "id": "8d2835db-9beb-43cf-9ac6-299b821f9512",
+  "id": "32bf7b3a-acf1-4f9c-8c06-d589acde67db",
   "prevId": "00000000-0000-0000-0000-000000000000",
   "version": "7",
   "dialect": "postgresql",
@@ -218,6 +218,234 @@
       },
       "isRLSEnabled": false
     },
+    "public.cue_occurrences": {
+      "name": "cue_occurrences",
+      "schema": "",
+      "columns": {
+        "cue_id": {
+          "name": "cue_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "original_at": {
+          "name": "original_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "status": {
+          "name": "status",
+          "type": "occurrence_status",
+          "typeSchema": "public",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "new_at": {
+          "name": "new_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "detached_cue_id": {
+          "name": "detached_cue_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {
+        "cue_occurrences_new_at_idx": {
+          "name": "cue_occurrences_new_at_idx",
+          "columns": [
+            {
+              "expression": "new_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "cue_occurrences_cue_id_cues_id_fk": {
+          "name": "cue_occurrences_cue_id_cues_id_fk",
+          "tableFrom": "cue_occurrences",
+          "tableTo": "cues",
+          "columnsFrom": [
+            "cue_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {
+        "cue_occurrences_cue_id_original_at_pk": {
+          "name": "cue_occurrences_cue_id_original_at_pk",
+          "columns": [
+            "cue_id",
+            "original_at"
+          ]
+        }
+      },
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
+    "public.cues": {
+      "name": "cues",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "user_id": {
+          "name": "user_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "series_id": {
+          "name": "series_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "title": {
+          "name": "title",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "notes": {
+          "name": "notes",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "dtstart": {
+          "name": "dtstart",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "timezone": {
+          "name": "timezone",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "rrule": {
+          "name": "rrule",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "until": {
+          "name": "until",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "version": {
+          "name": "version",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 1
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {
+        "cues_user_idx": {
+          "name": "cues_user_idx",
+          "columns": [
+            {
+              "expression": "user_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "cues_series_idx": {
+          "name": "cues_series_idx",
+          "columns": [
+            {
+              "expression": "series_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "cues_user_id_users_id_fk": {
+          "name": "cues_user_id_users_id_fk",
+          "tableFrom": "cues",
+          "tableTo": "users",
+          "columnsFrom": [
+            "user_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
     "public.event_changes": {
       "name": "event_changes",
       "schema": "",
@@ -241,8 +469,8 @@
           "primaryKey": false,
           "notNull": true
         },
-        "delta_slots": {
-          "name": "delta_slots",
+        "delta_bars": {
+          "name": "delta_bars",
           "type": "integer",
           "primaryKey": false,
           "notNull": true
@@ -333,22 +561,22 @@
           "primaryKey": false,
           "notNull": false
         },
-        "late_slots": {
-          "name": "late_slots",
+        "late_bars": {
+          "name": "late_bars",
           "type": "integer",
           "primaryKey": false,
           "notNull": true,
           "default": 0
         },
-        "early_slots": {
-          "name": "early_slots",
+        "early_bars": {
+          "name": "early_bars",
           "type": "integer",
           "primaryKey": false,
           "notNull": true,
           "default": 0
         },
-        "extended_slots": {
-          "name": "extended_slots",
+        "extended_bars": {
+          "name": "extended_bars",
           "type": "integer",
           "primaryKey": false,
           "notNull": true,
@@ -468,18 +696,19 @@
           "primaryKey": false,
           "notNull": true
         },
-        "duration_slots": {
-          "name": "duration_slots",
+        "kind": {
+          "name": "kind",
+          "type": "event_kind",
+          "typeSchema": "public",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'cadenza'"
+        },
+        "duration_bars": {
+          "name": "duration_bars",
           "type": "integer",
           "primaryKey": false,
           "notNull": true
-        },
-        "rewardable": {
-          "name": "rewardable",
-          "type": "boolean",
-          "primaryKey": false,
-          "notNull": true,
-          "default": true
         },
         "status": {
           "name": "status",
@@ -589,7 +818,11 @@
       "checkConstraints": {
         "events_duration_positive": {
           "name": "events_duration_positive",
-          "value": "\"events\".\"duration_slots\" >= 1"
+          "value": "\"events\".\"duration_bars\" >= 1"
+        },
+        "events_tutti_status": {
+          "name": "events_tutti_status",
+          "value": "\"events\".\"kind\" = 'cadenza' OR \"events\".\"status\" = 'planned'"
         },
         "events_start_on_grid": {
           "name": "events_start_on_grid",
@@ -899,234 +1132,6 @@
       "checkConstraints": {},
       "isRLSEnabled": false
     },
-    "public.reminder_occurrences": {
-      "name": "reminder_occurrences",
-      "schema": "",
-      "columns": {
-        "reminder_id": {
-          "name": "reminder_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "original_at": {
-          "name": "original_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "status": {
-          "name": "status",
-          "type": "occurrence_status",
-          "typeSchema": "public",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "new_at": {
-          "name": "new_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "detached_reminder_id": {
-          "name": "detached_reminder_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "updated_at": {
-          "name": "updated_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "now()"
-        }
-      },
-      "indexes": {
-        "reminder_occurrences_new_at_idx": {
-          "name": "reminder_occurrences_new_at_idx",
-          "columns": [
-            {
-              "expression": "new_at",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        }
-      },
-      "foreignKeys": {
-        "reminder_occurrences_reminder_id_reminders_id_fk": {
-          "name": "reminder_occurrences_reminder_id_reminders_id_fk",
-          "tableFrom": "reminder_occurrences",
-          "tableTo": "reminders",
-          "columnsFrom": [
-            "reminder_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        }
-      },
-      "compositePrimaryKeys": {
-        "reminder_occurrences_reminder_id_original_at_pk": {
-          "name": "reminder_occurrences_reminder_id_original_at_pk",
-          "columns": [
-            "reminder_id",
-            "original_at"
-          ]
-        }
-      },
-      "uniqueConstraints": {},
-      "policies": {},
-      "checkConstraints": {},
-      "isRLSEnabled": false
-    },
-    "public.reminders": {
-      "name": "reminders",
-      "schema": "",
-      "columns": {
-        "id": {
-          "name": "id",
-          "type": "uuid",
-          "primaryKey": true,
-          "notNull": true
-        },
-        "user_id": {
-          "name": "user_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "series_id": {
-          "name": "series_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "title": {
-          "name": "title",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "notes": {
-          "name": "notes",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "dtstart": {
-          "name": "dtstart",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "timezone": {
-          "name": "timezone",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "rrule": {
-          "name": "rrule",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "until": {
-          "name": "until",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "version": {
-          "name": "version",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true,
-          "default": 1
-        },
-        "created_at": {
-          "name": "created_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "now()"
-        },
-        "updated_at": {
-          "name": "updated_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "now()"
-        }
-      },
-      "indexes": {
-        "reminders_user_idx": {
-          "name": "reminders_user_idx",
-          "columns": [
-            {
-              "expression": "user_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
-        "reminders_series_idx": {
-          "name": "reminders_series_idx",
-          "columns": [
-            {
-              "expression": "series_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        }
-      },
-      "foreignKeys": {
-        "reminders_user_id_users_id_fk": {
-          "name": "reminders_user_id_users_id_fk",
-          "tableFrom": "reminders",
-          "tableTo": "users",
-          "columnsFrom": [
-            "user_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        }
-      },
-      "compositePrimaryKeys": {},
-      "uniqueConstraints": {},
-      "policies": {},
-      "checkConstraints": {},
-      "isRLSEnabled": false
-    },
     "public.reward_rules": {
       "name": "reward_rules",
       "schema": "",
@@ -1137,26 +1142,26 @@
           "primaryKey": true,
           "notNull": true
         },
-        "tokens_per_slot": {
-          "name": "tokens_per_slot",
+        "tokens_per_bar": {
+          "name": "tokens_per_bar",
           "type": "integer",
           "primaryKey": false,
           "notNull": true
         },
-        "early_slot_rate": {
-          "name": "early_slot_rate",
+        "early_bar_rate": {
+          "name": "early_bar_rate",
           "type": "numeric(5, 4)",
           "primaryKey": false,
           "notNull": true
         },
-        "extended_slot_rate": {
-          "name": "extended_slot_rate",
+        "extended_bar_rate": {
+          "name": "extended_bar_rate",
           "type": "numeric(5, 4)",
           "primaryKey": false,
           "notNull": true
         },
-        "auto_finish_deduction_slots": {
-          "name": "auto_finish_deduction_slots",
+        "auto_finish_deduction_bars": {
+          "name": "auto_finish_deduction_bars",
           "type": "integer",
           "primaryKey": false,
           "notNull": true
@@ -1177,7 +1182,7 @@
       "checkConstraints": {
         "reward_rules_even_value": {
           "name": "reward_rules_even_value",
-          "value": "\"reward_rules\".\"tokens_per_slot\" > 0 AND \"reward_rules\".\"tokens_per_slot\" % 2 = 0"
+          "value": "\"reward_rules\".\"tokens_per_bar\" > 0 AND \"reward_rules\".\"tokens_per_bar\" % 2 = 0"
         }
       },
       "isRLSEnabled": false
@@ -1459,6 +1464,18 @@
           "primaryKey": false,
           "notNull": false
         },
+        "email": {
+          "name": "email",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "password_hash": {
+          "name": "password_hash",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
         "display_name": {
           "name": "display_name",
           "type": "text",
@@ -1503,6 +1520,13 @@
           "columns": [
             "apple_sub"
           ]
+        },
+        "users_email_unique": {
+          "name": "users_email_unique",
+          "nullsNotDistinct": false,
+          "columns": [
+            "email"
+          ]
         }
       },
       "policies": {},
@@ -1530,6 +1554,14 @@
         "early_start"
       ]
     },
+    "public.event_kind": {
+      "name": "event_kind",
+      "schema": "public",
+      "values": [
+        "cadenza",
+        "tutti"
+      ]
+    },
     "public.event_status": {
       "name": "event_status",
       "schema": "public",
@@ -1537,8 +1569,7 @@
         "planned",
         "in_progress",
         "done",
-        "missed",
-        "cancelled"
+        "missed"
       ]
     },
     "public.finish_kind": {

@@ -1,10 +1,11 @@
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { type Harness, sh, startHarness } from './harness.js';
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { CLOCK_START, type Harness, sh, startHarness } from './harness.js';
 
 let h: Harness;
 beforeAll(async () => {
   h = await startHarness();
 });
+beforeEach(() => h.clock.set(CLOCK_START));
 afterAll(async () => h?.stop());
 
 describe('ops and errors', () => {
@@ -178,6 +179,7 @@ describe('events CRUD', () => {
     expect((await post(sh('14:10'), 1, 'tutti')).body.error.code).toBe('bar_misaligned');
     expect((await post(sh('14:00'), 1.5)).body.error.code).toBe('invalid_duration');
     expect((await post(sh('14:00'), 0)).body.error.code).toBe('invalid_duration');
+    expect((await post(sh('14:00'), 73)).body.error.code).toBe('invalid_duration');
     const a = await post(sh('14:00'), 3);
     expect(a.body.kind).toBe('cadenza');
     const b = await post(sh('14:40'), 2);
@@ -204,22 +206,63 @@ describe('events CRUD', () => {
 
     h.clock.set(sh('14:20'));
     await h.request('POST', `/v1/events/${t.id}/start`, { token, body: { tapped_at: sh('14:20') } });
-    const started = await h.request('PATCH', `/v1/events/${t.id}`, { token, body: { version: toCadenza.body.version + 1, kind: 'tutti' } });
+    const v = toCadenza.body.version + 1;
+    const started = await h.request('PATCH', `/v1/events/${t.id}`, { token, body: { version: v, kind: 'tutti' } });
     expect(started.body.error.code).toBe('invalid_state');
-    h.clock.set('2026-11-02T05:00:00Z');
+    // Its plan is fixed once started, but its title can still change.
+    expect((await h.request('PATCH', `/v1/events/${t.id}`, { token, body: { version: v, duration_bars: 2 } })).body.error.code).toBe(
+      'invalid_state',
+    );
+    expect((await h.request('PATCH', `/v1/events/${t.id}`, { token, body: { version: v, title: 'y' } })).body.title).toBe('y');
   });
 
-  it('uses optimistic locking on PATCH and cancels with DELETE', async () => {
+  it("doesn't plan, move or switch a Cadenza into the past; Tuttis can be planned any time", async () => {
     const { token } = await h.signIn();
-    const ev = (await h.request('POST', '/v1/events', { token, body: { title: 'x', planned_start: sh('14:00'), duration_bars: 1 } })).body;
+    h.clock.set(sh('14:03'));
+    const post = (planned_start: string, kind: 'cadenza' | 'tutti') =>
+      h.request('POST', '/v1/events', { token, body: { title: 'x', planned_start, duration_bars: 1, kind } });
+    const past = await post(sh('14:00'), 'cadenza');
+    expect(past.status).toBe(422);
+    expect(past.body.error.code).toBe('start_in_past');
+    const x = (await post(sh('14:20'), 'cadenza')).body;
+    const t = (await post(sh('13:00'), 'tutti')).body;
+    expect(t.kind).toBe('tutti');
+
+    const patch = (ev: { id: string; version: number }, body: object) =>
+      h.request('PATCH', `/v1/events/${ev.id}`, { token, body: { version: ev.version, ...body } });
+    expect((await patch(x, { planned_start: sh('14:00') })).body.error.code).toBe('start_in_past');
+    expect((await patch(t, { kind: 'cadenza' })).body.error.code).toBe('start_in_past');
+    // An edit that keeps the start isn't checked, even once the start has passed.
+    h.clock.set(sh('14:25'));
+    expect((await patch(x, { duration_bars: 2 })).body).toMatchObject({ duration_bars: 2, version: x.version + 1 });
+  });
+
+  it('uses optimistic locking on PATCH and deletes planned events only, with their change history', async () => {
+    const { token } = await h.signIn();
+    const post = (planned_start: string, duration_bars: number) =>
+      h.request('POST', '/v1/events', { token, body: { title: 'x', planned_start, duration_bars } });
+    const ev = (await post(sh('14:00'), 1)).body;
     const moved = await h.request('PATCH', `/v1/events/${ev.id}`, { token, body: { version: 1, planned_start: sh('16:00') } });
     expect(moved.body).toMatchObject({ version: 2, planned_start: new Date(sh('16:00')).toISOString() });
     const stale = await h.request('PATCH', `/v1/events/${ev.id}`, { token, body: { version: 1, title: 'y' } });
     expect(stale.body.error.code).toBe('version_conflict');
-    const cancelled = await h.request('DELETE', `/v1/events/${ev.id}`, { token });
-    expect(cancelled.body.status).toBe('cancelled');
-    // Cancelled events don't count toward the overlap rule.
-    expect((await h.request('GET', `/v1/events/${ev.id}`, { token })).body.status).toBe('cancelled');
+    expect((await h.request('DELETE', `/v1/events/${ev.id}`, { token })).status).toBe(204);
+    expect((await h.request('GET', `/v1/events/${ev.id}`, { token })).status).toBe(404);
+
+    // B gets a change history when A's extension pushes it; deleting B removes both.
+    const a = (await post(sh('14:00'), 3)).body;
+    const b = (await post(sh('15:00'), 1)).body;
+    h.clock.set(sh('14:00'));
+    await h.request('POST', `/v1/events/${a.id}/start`, { token, body: { tapped_at: sh('14:00') } });
+    await h.request('POST', `/v1/events/${a.id}/extend`, { token, body: { bars: 1 } });
+    const history = `SELECT count(*)::int AS n FROM event_changes WHERE event_id = $1`;
+    expect((await h.database.pool.query(history, [b.id])).rows[0].n).toBe(1);
+    expect((await h.request('DELETE', `/v1/events/${b.id}`, { token })).status).toBe(204);
+    expect((await h.database.pool.query(history, [b.id])).rows[0].n).toBe(0);
+
+    const started = await h.request('DELETE', `/v1/events/${a.id}`, { token });
+    expect(started.status).toBe(409);
+    expect(started.body.error.code).toBe('invalid_state');
   });
 
   it('pages a range with a cursor and supports ETags', async () => {

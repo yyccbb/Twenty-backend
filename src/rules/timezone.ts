@@ -78,7 +78,7 @@ const SAMPLE_TO = Date.UTC(2036, 0, 1);
 const SAMPLE_STEP = 24 * 60 * MINUTE_MS;
 
 /**
- * Only zones whose offset is always a whole number of hours are supported (spec §3.1),
+ * Only zones whose offset is always a whole number of hours are supported (rules.md §1),
  * because grid math runs in UTC.
  */
 export function isSupportedTimezone(tz: string): boolean {
@@ -101,7 +101,7 @@ export function parseLocalTime(value: string): { hour: number; minute: number } 
 
 /**
  * The end of the user's day that an event starting at `start` belongs to: the first instant
- * strictly after `start` at which the local clock reads `dayEndLocalTime` (spec §3.5).
+ * strictly after `start` at which the local clock reads `dayEndLocalTime` (rules.md §5).
  */
 export function dayEndAfter(start: Date, tz: string, dayEndLocalTime: string): Date {
   const { hour, minute } = parseLocalTime(dayEndLocalTime);

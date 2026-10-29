@@ -1,5 +1,5 @@
 import { createRoute, z } from '@hono/zod-openapi';
-import { cancelEvent, createEvent, getOwnedEvent, eventDto, listEvents, updateEvent } from '../services/events.js';
+import { createEvent, deleteEvent, eventDto, getOwnedEvent, listEvents, updateEvent } from '../services/events.js';
 import { extendEvent, finishEvent, startEvent } from '../services/recording.js';
 import { DateTime, IdParam, IdempotencyHeaders, PageQuery, type RouteModule, body, errors, json, security, Uuid } from './common.js';
 import { parseRange } from './range.js';
@@ -47,7 +47,7 @@ export const eventRoutes: RouteModule = (app, deps) => {
       tags: ['Calendar'],
       summary: 'Create a Cadenza or a Tutti',
       description:
-        'planned_start must be on a :00/:20/:40 mark (422 bar_misaligned) and duration_bars a whole number ≥ 1 (422 invalid_duration). A Cadenza may not overlap another Cadenza (409 cadenza_overlap); Tuttis overlap freely. `kind` defaults to cadenza.',
+        'planned_start must be on a :00/:20/:40 mark (422 bar_misaligned) and duration_bars a whole number from 1 to 72 (422 invalid_duration). A Cadenza cannot start before now (422 start_in_past) and may not overlap another Cadenza (409 cadenza_overlap); Tuttis can be planned at any time and overlap freely. `kind` defaults to cadenza.',
       security,
       request: {
         headers: IdempotencyHeaders,
@@ -57,7 +57,7 @@ export const eventRoutes: RouteModule = (app, deps) => {
             notes: z.string().max(5000).nullish(),
             planned_start: DateTime,
             kind: EventKind.default('cadenza'),
-            duration_bars: z.number().openapi({ description: 'Whole 20-minute bars, at least 1' }),
+            duration_bars: z.number().openapi({ description: 'Whole 20-minute bars, 1 to 72' }),
             goal_id: Uuid.nullish(),
           }),
         ),
@@ -74,7 +74,7 @@ export const eventRoutes: RouteModule = (app, deps) => {
       tags: ['Calendar'],
       summary: 'Edit, reschedule or switch the kind of an event',
       description:
-        'Send the current `version`; a stale version returns 409 version_conflict. Only planned events can be rescheduled or switch `kind` (409 invalid_state). Switching to a Cadenza runs the overlap check (409 cadenza_overlap).',
+        'Send the current `version`; a stale version returns 409 version_conflict. Only planned events can be moved, resized or switch `kind` (409 invalid_state). Moving a Cadenza, or switching to one, to a start before now returns 422 start_in_past; switching to a Cadenza also runs the overlap check (409 cadenza_overlap).',
       security,
       request: {
         params: IdParam,
@@ -101,12 +101,17 @@ export const eventRoutes: RouteModule = (app, deps) => {
       method: 'delete',
       path: '/v1/events/{id}',
       tags: ['Calendar'],
-      summary: 'Cancel a planned event',
+      summary: 'Delete a planned event',
+      description:
+        'The event and its change history are removed; there is no cancelled state. A Cadenza that has started, finished or been missed cannot be deleted (409 invalid_state).',
       security,
       request: { params: IdParam, headers: IdempotencyHeaders },
-      responses: { 200: json(EventSchema), ...errors(401, 404, 409) },
+      responses: { 204: { description: 'Deleted' }, ...errors(401, 404, 409) },
     }),
-    async (c) => c.json(await cancelEvent(deps, c.get('userId'), c.req.valid('param').id), 200),
+    async (c) => {
+      await deleteEvent(deps, c.get('userId'), c.req.valid('param').id);
+      return c.body(null, 204);
+    },
   );
 
   app.openapi(
@@ -116,7 +121,7 @@ export const eventRoutes: RouteModule = (app, deps) => {
       tags: ['Recording'],
       summary: 'Record a Cadenza start tap',
       description:
-        'Cadenzas only (a Tutti gets 409 not_cadenza). recorded_start = snap(tapped_at). Up to 2 bars early is allowed (more: 422 too_early); an early start that would overlap another Cadenza returns 409 cadenza_overlap. A start that snaps to the planned end marks the Cadenza missed.',
+        'Cadenzas only (a Tutti gets 409 not_cadenza). recorded_start = snap(tapped_at). Up to 2 bars early is allowed (more: 422 too_early); an early start that would overlap another Cadenza returns 409 cadenza_overlap. Only one Cadenza can be in progress at a time (409 cadenza_in_progress, with its ID in `conflicts`). A start that snaps to the planned end marks the Cadenza missed.',
       security,
       request: { params: IdParam, headers: IdempotencyHeaders, body: body(TapBody) },
       responses: { 200: json(StartResultSchema), ...errors(400, 401, 404, 409, 422) },
@@ -132,12 +137,12 @@ export const eventRoutes: RouteModule = (app, deps) => {
       tags: ['Recording'],
       summary: 'Extend a Cadenza in progress by whole bars, pushing later Cadenzas',
       description:
-        'Cadenzas only (a Tutti gets 409 not_cadenza). Allowed until 5 minutes after the planned end. Later Cadenzas it runs into are pushed only as far as needed (gaps are used up first), in one transaction; Tuttis never move. Every moved Cadenza is returned. `dry_run: true` returns the preview without saving. Rejected with 409 pushed_event_locked if a Cadenza that would be pushed is in progress or done.',
+        'Cadenzas only (a Tutti gets 409 not_cadenza), and only while in progress (409 invalid_state), until 5 minutes after the planned end (409 window_closed). Adds 1 to 72 bars. Later Cadenzas it runs into are pushed only as far as needed (gaps are used up first), in one transaction; Tuttis never move. Every moved Cadenza is returned, with day-end warnings. `dry_run: true` returns the preview without saving.',
       security,
       request: {
         params: IdParam,
         headers: IdempotencyHeaders,
-        body: body(z.object({ bars: z.number(), dry_run: z.boolean().default(false) })),
+        body: body(z.object({ bars: z.number().openapi({ description: 'Whole bars to add, 1 to 72' }), dry_run: z.boolean().default(false) })),
       },
       responses: { 200: json(ExtendResultSchema), ...errors(400, 401, 404, 409, 422) },
     }),
@@ -154,7 +159,7 @@ export const eventRoutes: RouteModule = (app, deps) => {
       tags: ['Recording'],
       summary: 'Record a Cadenza finish tap and award tokens',
       description:
-        'Cadenzas only (a Tutti gets 409 not_cadenza). Finish taps snap like start taps, except that on time is only (E−5, E+5]: a tap in (E−15, E−5] records E−20. Earlier taps shorten the Cadenza; a tap after E+5 counts as auto-finish (one bar deducted); a finish that snaps to the recorded start is abandoned.',
+        'Cadenzas only (a Tutti gets 409 not_cadenza). Finish taps snap like start taps, except that on time is only (E−5, E+5]: a tap in (E−15, E−5] records E−20. Earlier taps shorten the Cadenza; a finish that snaps to the recorded start is abandoned. A tap after E+5 gets 409 window_closed: the server auto-finishes at E+5 (one bar deducted). A tap made by E+5 that arrives after the auto-finish replaces it once, with a ledger adjustment; any other second finish gets 409 invalid_state.',
       security,
       request: { params: IdParam, headers: IdempotencyHeaders, body: body(TapBody) },
       responses: { 200: json(FinishResultSchema), ...errors(400, 401, 404, 409, 422) },

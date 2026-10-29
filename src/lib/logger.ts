@@ -26,5 +26,3 @@ export const logger = pino({
   },
   redact: ['req.headers.authorization', '*.refresh_token', '*.id_token', '*.access_token'],
 });
-
-export type Logger = typeof logger;

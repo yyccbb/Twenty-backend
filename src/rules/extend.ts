@@ -1,9 +1,9 @@
-import { type GridRules, DEFAULT_GRID_RULES, MINUTE_MS, barMs } from './constants.js';
+import { type GridRules, DEFAULT_GRID_RULES, MAX_BARS, MINUTE_MS, barMs } from './constants.js';
 import { type CalendarEvent, isActiveCadenza } from './overlap.js';
 import { dayEndAfter } from './timezone.js';
 
 export interface ExtendInput {
-  /** Every event near the target, using effective blocks ([recorded_start, E) for started Cadenzas). */
+  /** The target and every later Cadenza, as effective blocks ([recorded_start, E) for one in progress). */
   calendar: readonly CalendarEvent[];
   eventId: string;
   bars: number;
@@ -27,12 +27,13 @@ const byStart = (a: CalendarEvent, b: CalendarEvent) =>
   a.start.getTime() - b.start.getTime() || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
 
 /**
- * Extends an in-progress Cadenza by whole bars and pushes later Cadenzas in a cascade (spec §3.5).
+ * Extends an in-progress Cadenza by 1 to 72 bars and pushes later Cadenzas in a cascade (rules.md §5).
  * Each pushed Cadenza moves only as far as needed: it starts exactly at the previous one's new end,
- * so gaps are used up first. Tuttis never move, and Cadenzas in progress or done can't.
+ * so gaps are used up first. Tuttis never move. A pushed Cadenza is always still planned; if one somehow
+ * isn't (a late offline start from another device), the extension is rejected rather than move its record.
  */
 export function planExtension(input: ExtendInput, rules: GridRules = DEFAULT_GRID_RULES): ExtendResult {
-  if (!Number.isInteger(input.bars) || input.bars < 1) return { ok: false, error: 'invalid_bars' };
+  if (!Number.isInteger(input.bars) || input.bars < 1 || input.bars > MAX_BARS) return { ok: false, error: 'invalid_bars' };
   const target = input.calendar.find((e) => e.id === input.eventId);
   if (!target) return { ok: false, error: 'not_found' };
   if (target.kind !== 'cadenza') return { ok: false, error: 'not_cadenza' };
@@ -61,10 +62,11 @@ export function planExtension(input: ExtendInput, rules: GridRules = DEFAULT_GRI
   }
   if (locked.length > 0) return { ok: false, error: 'pushed_event_locked', conflicts: locked.sort() };
 
+  // Each changed Cadenza is checked against the first day end after its start before the push.
+  const originalStart = new Map([target, ...later].map((e) => [e.id, e.start]));
   const warnings: string[] = [];
-  for (const c of [{ id: target.id, start: target.start, end: newEnd }, ...moved]) {
-    const originalStart = input.calendar.find((e) => e.id === c.id)!.start;
-    const dayEnd = dayEndAfter(originalStart, input.timezone, input.dayEndLocalTime);
+  for (const c of [{ id: target.id, end: newEnd }, ...moved]) {
+    const dayEnd = dayEndAfter(originalStart.get(c.id)!, input.timezone, input.dayEndLocalTime);
     if (c.end.getTime() > dayEnd.getTime()) warnings.push(c.id);
   }
 

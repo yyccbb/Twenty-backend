@@ -2,11 +2,14 @@ import { z } from 'zod';
 import fixtures from '../../vendor/Twenty/contracts/rules/fixtures.json' with { type: 'json' };
 
 // Every value comes from the `constants` block of the shared fixtures in the
-// vendor/Twenty submodule (placeholders until the game design is final, spec §3.7).
+// vendor/Twenty submodule (placeholders until the game design is final, rules.md §7).
 // The server pays out with the versioned `reward_rules` table, which migrate.ts
 // keeps in step with DEFAULT_REWARD_RULE.
 
 export const MINUTE_MS = 60_000;
+
+/** The most bars an event may be planned with, or added by one extension: 72 bars = 24 h (rules.md §1, §5). */
+export const MAX_BARS = 72;
 
 export interface GridRules {
   barMinutes: number;

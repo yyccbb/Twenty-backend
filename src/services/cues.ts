@@ -155,7 +155,7 @@ async function pruneOverrides(tx: Tx, cueId: string, def: RecurrenceDef, moveTo?
 }
 
 /**
- * Edits a cue. A repeating one takes a scope, like Apple Calendar (spec §3.8):
+ * Edits a cue. A repeating one takes a scope, like Apple Calendar (rules.md §8):
  * - this: an override for one occurrence (a move), or a standalone copy when its content changes;
  * - following: the series is split at `occurrence` (old part gets an UNTIL, new part shares series_id);
  * - all: the rule is edited in place, keeping overrides whose original time still exists.

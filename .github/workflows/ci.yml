@@ -1,0 +1,50 @@
+# CI from the backend guide (vendor/Twenty/docs/developer-guide/backend.md §13).
+# Every pull request must pass `test` before merge. A push to main also builds the image once, tags it with the
+# git SHA and pushes it to Alibaba Container Registry (Hong Kong), not Docker Hub.
+#
+# Settings: secret FIXTURES_TOKEN if the Twenty submodule is private; secrets ACR_USERNAME and ACR_PASSWORD and
+# variable ACR_NAMESPACE for the registry. The image job is skipped until ACR_NAMESPACE is set.
+name: ci
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest # has Docker, which Testcontainers needs
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: true # the rules tests and the build read vendor/Twenty/contracts/rules/fixtures.json
+          token: ${{ secrets.FIXTURES_TOKEN || github.token }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm test # includes the rules fixtures and the OpenAPI drift test
+      - name: Migrations match schema
+        run: npm run db:generate && test -z "$(git status --porcelain src/db/migrations)"
+      - run: npm run build
+
+  image:
+    needs: test
+    if: github.event_name == 'push' && vars.ACR_NAMESPACE != ''
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: true # the image build reads the fixtures too
+          token: ${{ secrets.FIXTURES_TOKEN || github.token }}
+      - uses: docker/login-action@v3
+        with:
+          registry: registry.cn-hongkong.aliyuncs.com
+          username: ${{ secrets.ACR_USERNAME }}
+          password: ${{ secrets.ACR_PASSWORD }}
+      - uses: docker/build-push-action@v6
+        with:
+          context: . # the checkout above, with the submodule; the default Git context would leave it out
+          push: true
+          tags: registry.cn-hongkong.aliyuncs.com/${{ vars.ACR_NAMESPACE }}/twenty-backend:${{ github.sha }}

@@ -1,4 +1,4 @@
--- The token ledger is append-only: corrections are new entries (spec §4).
+-- The token ledger is append-only: corrections are new entries (rules.md §7).
 CREATE FUNCTION token_ledger_reject_change() RETURNS trigger
 LANGUAGE plpgsql AS $$
 BEGIN
@@ -15,5 +15,5 @@ CREATE TRIGGER token_ledger_no_truncate
   FOR EACH STATEMENT EXECUTE FUNCTION token_ledger_reject_change();
 --> statement-breakpoint
 -- Reward rule v1: placeholder values from contracts/rules/fixtures.json until the game design is final.
-INSERT INTO reward_rules (version, tokens_per_slot, early_slot_rate, extended_slot_rate, auto_finish_deduction_slots)
+INSERT INTO reward_rules (version, tokens_per_bar, early_bar_rate, extended_bar_rate, auto_finish_deduction_bars)
 VALUES (1, 10, 0.5, 0.5, 1);

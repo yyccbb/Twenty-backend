@@ -1,10 +1,10 @@
 import { z } from 'zod';
 import { uuidv7 } from '../db/ids.js';
 import type { BreakdownItem } from '../db/schema.js';
+import { MAX_BARS } from '../rules/index.js';
 import type { AiMessage, AiProvider } from './provider.js';
 
 export const BREAKDOWN_PROMPT_VERSION = 'breakdown-v2';
-export const MAX_ITEM_BARS = 72;
 
 export class AiOutputError extends Error {}
 
@@ -75,7 +75,7 @@ function extractJson(content: string): unknown {
 function repairBars(item: z.infer<typeof RawItem>): number | null {
   const raw = item.duration_bars ?? (item.duration_minutes != null ? item.duration_minutes / 20 : null);
   if (raw == null || !Number.isFinite(raw) || raw <= 0) return null;
-  return Math.min(MAX_ITEM_BARS, Math.max(1, Math.round(raw)));
+  return Math.min(MAX_BARS, Math.max(1, Math.round(raw)));
 }
 
 /** Validates model output with Zod: durations must be whole bars (repaired when possible); bad items are dropped. */

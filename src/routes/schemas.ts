@@ -3,7 +3,7 @@ import { z } from '@hono/zod-openapi';
 const Instant = z.string().openapi({ format: 'date-time', example: '2026-11-02T06:00:00.000Z' });
 const NullableInstant = Instant.nullable();
 
-export const EventStatus = z.enum(['planned', 'in_progress', 'done', 'missed', 'cancelled']).openapi('EventStatus');
+export const EventStatus = z.enum(['planned', 'in_progress', 'done', 'missed']).openapi('EventStatus');
 export const FinishKind = z.enum(['on_time', 'shortened', 'auto', 'abandoned']).openapi('FinishKind');
 export const EventKind = z
   .enum(['cadenza', 'tutti'])
@@ -39,7 +39,7 @@ export const EventSchema = z
     planned_end: Instant,
     kind: EventKind,
     duration_bars: z.number().int(),
-    status: EventStatus.openapi({ description: 'Tuttis are only ever planned or cancelled' }),
+    status: EventStatus.openapi({ description: 'Tuttis are only ever planned' }),
     version: z.number().int(),
     record: EventRecordSchema.nullable(),
     created_at: Instant,

@@ -45,7 +45,6 @@ export async function startHarness(env: Record<string, string> = {}): Promise<Ha
   await runMigrations(url, join(import.meta.dirname, '../../src/db/migrations'));
 
   const config = loadConfig({
-    NODE_ENV: 'test',
     DATABASE_URL: url,
     JWT_SECRET: 'test-secret-test-secret-test-secret-123',
     APPLE_CLIENT_IDS: 'app.twenty.ios',
@@ -53,7 +52,7 @@ export async function startHarness(env: Record<string, string> = {}): Promise<Ha
     ...env,
   });
   const database = createDatabase(url, 5);
-  const clock = new FixedClock(new Date('2026-11-02T05:00:00Z'));
+  const clock = new FixedClock(new Date(CLOCK_START));
   const queue = new RecordingQueue();
   const ai = new FakeAiProvider();
   const deps: Deps = { config, database, clock, queue, apple: new FakeAppleVerifier(), ai };
@@ -110,3 +109,6 @@ export async function startHarness(env: Record<string, string> = {}): Promise<Ha
 
 /** Local Shanghai time on 2026-11-02 (or a given date) as an ISO string. */
 export const sh = (hhmm: string, date = '2026-11-02') => `${date}T${hhmm.length === 5 ? `${hhmm}:00` : hhmm}+08:00`;
+
+/** Where the fake clock starts. Cadenzas can't be planned before now, so tests reset to it in beforeEach. */
+export const CLOCK_START = sh('13:00');

@@ -52,7 +52,8 @@ src/lib/       errors, logger, clock, pagination
   24 h old or ahead of server time (beyond 2 min of skew) are rejected.
 - **Jobs are enqueued inside the same transaction** as the write that needs them (pg-boss `db` option), so an
   auto-finish job exists exactly when the start committed. The auto-finish job is a no-op if the planned end has
-  changed since it was scheduled.
+  changed since it was scheduled. A start finishes any other Cadenza already past its `E + 5` first, so a
+  late-running job never blocks the next Cadenza.
 - **The ledger is append-only**, enforced by a trigger. Reward payouts use the idempotency key
   `event_reward:<event_id>`, so retries and races can't pay twice, with or without an `Idempotency-Key` header.
 - **Writes accept `Idempotency-Key`.** The first response (below 500) is stored for 24 h and replayed with

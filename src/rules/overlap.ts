@@ -1,4 +1,4 @@
-export type EventStatus = 'planned' | 'in_progress' | 'done' | 'missed' | 'cancelled';
+export type EventStatus = 'planned' | 'in_progress' | 'done' | 'missed';
 export type EventKind = 'cadenza' | 'tutti';
 
 /** An event's effective block, half-open [start, end). */
@@ -7,15 +7,16 @@ export interface CalendarEvent {
   kind: EventKind;
   start: Date;
   end: Date;
+  /** Omitted means planned. */
   status?: EventStatus;
 }
 
-/** Cancelled and missed events, and empty blocks, never count. */
+/** Missed events and empty blocks (an abandoned Cadenza occupies nothing) never count. */
 export function isActive(e: CalendarEvent): boolean {
-  return e.status !== 'cancelled' && e.status !== 'missed' && e.end.getTime() > e.start.getTime();
+  return e.status !== 'missed' && e.end.getTime() > e.start.getTime();
 }
 
-/** Active Cadenzas are the only events the overlap rule and the cascade look at (spec §3.6). */
+/** Active Cadenzas are the only events the overlap rule and the cascade look at (rules.md §6). */
 export function isActiveCadenza(e: CalendarEvent): boolean {
   return e.kind === 'cadenza' && isActive(e);
 }
